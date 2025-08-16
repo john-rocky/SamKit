@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">SAMKit Demo</string>
+    <string name="app_description">Segment Anything on Mobile</string>
+    <string name="select_image">Select an image to segment</string>
+    <string name="gallery">Gallery</string>
+    <string name="camera">Camera</string>
+    <string name="start_segmentation">Start Segmentation</string>
+    <string name="loading_model">Loading Model...</string>
+    <string name="back">Back</string>
+    <string name="share">Share</string>
+    <string name="save">Save</string>
+    <string name="error">Error</string>
+    <string name="failed_to_load_model">Failed to load model</string>
+    <string name="permission_required">Permission Required</string>
+    <string name="camera_permission_required">Camera permission is required to take photos</string>
+    <string name="storage_permission_required">Storage permission is required to select images</string>
+</resources>

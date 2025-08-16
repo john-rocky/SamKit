@@ -1,0 +1,6 @@
+rootProject.name = "SAMKit-Android"
+include ':samkit'
+include ':samkit-ui'
+
+// Configure UI module path
+project(':samkit-ui').projectDir = new File('../../ui/android/samkit-ui')

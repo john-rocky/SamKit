@@ -1,0 +1,26 @@
+# Requirements for model conversion scripts
+
+# Core dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+onnx>=1.14.0
+onnxruntime>=1.15.0
+numpy>=1.24.0
+pillow>=10.0.0
+
+# iOS conversion
+coremltools>=7.0
+
+# Android conversion  
+tensorflow>=2.13.0
+tf2onnx>=1.14.0
+
+# SAM specific
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
+mobile-sam @ git+https://github.com/ChaoningZhang/MobileSAM.git
+
+# Utilities
+tqdm>=4.65.0
+pyyaml>=6.0
+requests>=2.31.0
+matplotlib>=3.7.0
