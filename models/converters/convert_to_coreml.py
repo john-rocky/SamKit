@@ -180,7 +180,7 @@ def convert_decoder(decoder: nn.Module,
         ct.TensorType(
             name="sparse_embeddings",
             shape=ct.EnumeratedShapes(
-                shapes=[[1, i, embed_dim] for i in range(1, 11)]
+                shapes=[[1, i, embed_dim] for i in range(1, 21)]
             )
         ),
         ct.TensorType(

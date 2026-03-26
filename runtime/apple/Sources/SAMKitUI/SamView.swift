@@ -222,6 +222,10 @@ struct InteractiveSegmentationView: View {
     }
 
     private func addPoint(at location: CGPoint) {
+        if points.count >= PromptEncoder.maxPoints {
+            // Drop the oldest point to stay within the model's limit
+            points.removeFirst()
+        }
         let point = SamPoint(x: location.x, y: location.y, label: .positive)
         points.append(point)
         runSegmentation()

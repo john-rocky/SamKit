@@ -11,6 +11,11 @@ public final class PromptEncoder {
 
     // MARK: - Properties
 
+    /// Maximum number of user points supported by the CoreML decoder model.
+    /// The model accepts sparse_embeddings with up to (maxPoints + 1) tokens
+    /// (user points + 1 padding token).
+    public static let maxPoints = 9
+
     private let embedDim: Int
     private let imageEmbeddingSize: (h: Int, w: Int)
     private let inputImageSize: (h: Int, w: Int)
@@ -70,14 +75,19 @@ public final class PromptEncoder {
     ) throws -> (MLMultiArray, MLMultiArray) {
 
         // Transform points to model coordinates and add padding token
+        // Limit to maxPoints to stay within CoreML enumerated shapes
+        let clampedPoints = points.count > Self.maxPoints
+            ? Array(points.suffix(Self.maxPoints))
+            : points
+
         var coords: [(Float, Float)] = []
         var labels: [Float] = []
 
-        if points.isEmpty {
+        if clampedPoints.isEmpty {
             coords.append((Float(inputImageSize.w / 2), Float(inputImageSize.h / 2)))
             labels.append(-1)
         } else {
-            for p in points {
+            for p in clampedPoints {
                 let mp = transform.toModel(p)
                 coords.append((Float(mp.x), Float(mp.y)))
                 labels.append(Float(p.label.rawValue))
