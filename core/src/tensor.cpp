@@ -1,8 +1,10 @@
 #include "samkit/tensor.h"
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
 #include <numeric>
 #include <stdexcept>
-#include <cstring>
 
 namespace samkit {
 

@@ -268,8 +268,8 @@ std::vector<uint8_t> Postprocessor::tensorToAlpha(const Tensor& tensor) const {
 }
 
 Tensor Postprocessor::refineMask(const Tensor& mask) const {
-    // Simple mask refinement using morphological operations
-    // This is a placeholder - actual implementation would use proper morphology
+    // TODO: Implement morphological refinement (erosion/dilation).
+    // Currently a no-op; no callers depend on this yet.
     return mask;
 }
 

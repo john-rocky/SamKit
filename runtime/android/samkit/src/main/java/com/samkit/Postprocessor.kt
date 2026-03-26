@@ -31,7 +31,7 @@ internal class Postprocessor(private val modelSize: Int = 1024) {
             val finalMasks = resizeToOriginal(depadded, transform)
             
             // 4. Extract individual masks with scores
-            val masks = extractMasks(finalMasks, iouPredictions, options)
+            val masks = extractMasks(finalMasks, iouPredictions, transform, options)
             
             return SamResult(masks = masks)
         } catch (e: Exception) {
@@ -165,12 +165,13 @@ internal class Postprocessor(private val modelSize: Int = 1024) {
     private fun extractMasks(
         masks: FloatArray,
         scores: FloatBuffer,
+        transform: TransformParams,
         options: SamOptions
     ): List<SamMask> {
-        
+
         val numMasks = scores.remaining()
-        val height = masks.size / (numMasks * masks.size / numMasks)
-        val width = masks.size / (numMasks * height)
+        val height = transform.originalHeight
+        val width = transform.originalWidth
         
         // Get scores and sort by them
         val scoreArray = FloatArray(numMasks)

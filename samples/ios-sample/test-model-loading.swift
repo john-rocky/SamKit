@@ -45,7 +45,7 @@ func testModelAvailability() {
 }
 
 print("📱 SAM2 Model Loading Test")
-print("=" * 40)
+print(String(repeating: "=", count: 40))
 
 testModelAvailability()
 

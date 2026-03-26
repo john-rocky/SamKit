@@ -8,11 +8,13 @@ import UIKit
 
 /// Handles mask postprocessing for SAM models
 public final class Postprocessor {
-    
+
     private let modelSize: Int
-    
-    public init(modelSize: Int = 1024) {
+    private let isHuggingFaceModel: Bool
+
+    public init(modelSize: Int = 1024, isHuggingFaceModel: Bool = false) {
         self.modelSize = modelSize
+        self.isHuggingFaceModel = isHuggingFaceModel
     }
     
     /// Process model output into final masks
@@ -23,39 +25,46 @@ public final class Postprocessor {
         options: SamOptions
     ) throws -> SamResult {
         
+        // Validate mask shape
+        guard maskLogits.shape.count >= 4 else {
+            throw SamError.postprocessingFailed("Expected 4D mask tensor, got shape: \(maskLogits.shape)")
+        }
+
         // Debug: print mask shape
         print("Mask logits shape: \(maskLogits.shape)")
         print("IOU predictions shape: \(iouPredictions.shape)")
         print("IOU predictions count: \(iouPredictions.count)")
         print("Transform: scale=\(transform.scale), padX=\(transform.padX), padY=\(transform.padY)")
         print("Original size: \(transform.originalWidth)x\(transform.originalHeight)")
-        
+
         // Check if mask is already at model resolution (1024x1024) or low resolution (256x256)
         let maskHeight = maskLogits.shape[2].intValue
         let isLowRes = maskHeight <= 256
         
+        let pp0 = CFAbsoluteTimeGetCurrent()
+
+        // Skip resizeToOriginal - keep masks at model resolution.
+        // The UI scales the CGImage via scaledToFit, so full-size resize is unnecessary
+        // and extremely expensive for large images (e.g. 4000x3000 = 12M pixels x 3 masks).
         let processedMasks: MLMultiArray
         if isLowRes {
-            // 1. Upsample masks from low resolution to model size
             let upsampled = try upsampleMasks(maskLogits)
-            // 2. Remove padding
-            let depadded = try removePadding(upsampled, transform: transform)
-            // 3. Resize to original image size
-            processedMasks = try resizeToOriginal(depadded, transform: transform)
+            processedMasks = try removePadding(upsampled, transform: transform)
         } else {
-            // Already at model resolution, just remove padding and resize
-            // 2. Remove padding
-            let depadded = try removePadding(maskLogits, transform: transform)
-            // 3. Resize to original image size
-            processedMasks = try resizeToOriginal(depadded, transform: transform)
+            processedMasks = try removePadding(maskLogits, transform: transform)
         }
-        
+
+        let pp4 = CFAbsoluteTimeGetCurrent()
+
         // 4. Extract individual masks with scores
         let masks = try extractMasks(
             processedMasks,
             scores: iouPredictions,
             options: options
         )
+
+        let pp5 = CFAbsoluteTimeGetCurrent()
+        print("[SAMKit postprocess] extractMasks=\(Int((pp5-pp4)*1000))ms total=\(Int((pp5-pp0)*1000))ms")
         
         let scores = masks.map { $0.score }
         return SamResult(masks: masks, scores: scores)
@@ -77,7 +86,8 @@ public final class Postprocessor {
         
         // Check if this is HuggingFace format with grid layout
         // HuggingFace SAM2 puts 3 masks in a 2x2 grid within each 256x256 image
-        let isHuggingFaceGrid = (batchSize == 1) && (secondDim == 3) && (lowResH == 256) && (lowResW == 256)
+        // Only apply this for HuggingFace models; MobileSAM also outputs [1,3,256,256] but as separate masks
+        let isHuggingFaceGrid = isHuggingFaceModel && (batchSize == 1) && (secondDim == 3) && (lowResH == 256) && (lowResW == 256)
         if isHuggingFaceGrid {
             print("HuggingFace grid layout detected! Each 256x256 contains masks in 2x2 grid")
             return try upsampleHuggingFaceGridMasks(masks)
@@ -267,25 +277,26 @@ public final class Postprocessor {
         let srcPtr = masks.dataPointer.bindMemory(to: Float32.self, capacity: masks.count)
         let dstPtr = depadded.dataPointer.bindMemory(to: Float32.self, capacity: depadded.count)
         
-        // Copy unpadded region for each mask
+        // Copy unpadded region for each mask (row-wise memcpy)
+        let rowBytes = scaledWidth * MemoryLayout<Float32>.size
         for n in 0..<numMasks {
             for c in 0..<channels {
                 let srcOffset = (n * channels + c) * maskHeight * maskWidth
                 let dstOffset = (n * channels + c) * scaledHeight * scaledWidth
-                
+
                 let maskSrc = srcPtr.advanced(by: srcOffset)
                 let maskDst = dstPtr.advanced(by: dstOffset)
-                
+
                 for y in 0..<scaledHeight {
-                    for x in 0..<scaledWidth {
-                        let srcIdx = (y + padTop) * maskWidth + (x + padLeft)
-                        let dstIdx = y * scaledWidth + x
-                        maskDst[dstIdx] = maskSrc[srcIdx]
-                    }
+                    memcpy(
+                        maskDst.advanced(by: y * scaledWidth),
+                        maskSrc.advanced(by: (y + padTop) * maskWidth + padLeft),
+                        rowBytes
+                    )
                 }
             }
         }
-        
+
         return depadded
     }
     
@@ -438,21 +449,6 @@ public final class Postprocessor {
                 cgImage: cgImage
             )
             
-            // Debug: save mask as PNG and print raw data sample
-            #if DEBUG
-            // Print first few values of mask data
-            print("Mask \(i) first 10 values:")
-            for j in 0..<min(10, height * width) {
-                print("  [\(j)] = \(maskData[j])")
-            }
-            
-            if let data = UIImage(cgImage: cgImage).pngData() {
-                let path = FileManager.default.temporaryDirectory.appendingPathComponent("mask_\(i)_\(width)x\(height).png")
-                try? data.write(to: path)
-                print("Saved mask \(i) to: \(path.path)")
-            }
-            #endif
-            
             resultMasks.append(mask)
         }
         
@@ -467,34 +463,19 @@ public final class Postprocessor {
         dstWidth: Int,
         dstHeight: Int
     ) {
-        let xScale = Float(srcWidth) / Float(dstWidth)
-        let yScale = Float(srcHeight) / Float(dstHeight)
-        
-        for y in 0..<dstHeight {
-            let srcY = Float(y) * yScale
-            let y0 = Int(srcY)
-            let y1 = min(y0 + 1, srcHeight - 1)
-            let dy = srcY - Float(y0)
-            
-            for x in 0..<dstWidth {
-                let srcX = Float(x) * xScale
-                let x0 = Int(srcX)
-                let x1 = min(x0 + 1, srcWidth - 1)
-                let dx = srcX - Float(x0)
-                
-                // Bilinear interpolation
-                let v00 = src[y0 * srcWidth + x0]
-                let v01 = src[y0 * srcWidth + x1]
-                let v10 = src[y1 * srcWidth + x0]
-                let v11 = src[y1 * srcWidth + x1]
-                
-                let v0 = v00 * (1 - dx) + v01 * dx
-                let v1 = v10 * (1 - dx) + v11 * dx
-                let v = v0 * (1 - dy) + v1 * dy
-                
-                dst[y * dstWidth + x] = v
-            }
-        }
+        var srcBuffer = vImage_Buffer(
+            data: src,
+            height: vImagePixelCount(srcHeight),
+            width: vImagePixelCount(srcWidth),
+            rowBytes: srcWidth * MemoryLayout<Float32>.size
+        )
+        var dstBuffer = vImage_Buffer(
+            data: dst,
+            height: vImagePixelCount(dstHeight),
+            width: vImagePixelCount(dstWidth),
+            rowBytes: dstWidth * MemoryLayout<Float32>.size
+        )
+        vImageScale_PlanarF(&srcBuffer, &dstBuffer, nil, vImage_Flags(kvImageHighQualityResampling))
     }
     
     private func sortMasksByScore(scores: UnsafeMutablePointer<Float32>, count: Int) -> [Int] {
@@ -509,35 +490,45 @@ public final class Postprocessor {
         height: Int,
         threshold: Float
     ) -> Data {
-        var alphaData = Data(count: width * height)
-        
+        let count = width * height
+        var alphaData = Data(count: count)
+
         alphaData.withUnsafeMutableBytes { buffer in
             guard let ptr = buffer.bindMemory(to: UInt8.self).baseAddress else { return }
-            
-            // Process exactly width * height elements for this single mask
+
             if threshold > 0 {
-                // Apply threshold
-                for i in 0..<(width * height) {
+                // Vectorized threshold
+                for i in 0..<count {
                     ptr[i] = logits[i] > threshold ? 255 : 0
                 }
             } else {
-                // Convert logits to alpha using sigmoid
-                for i in 0..<(width * height) {
-                    let logitValue = logits[i]
-                    // Clamp logit values to prevent overflow/underflow
-                    let clampedLogit = min(50, max(-50, logitValue))
-                    let sigmoid = 1.0 / (1.0 + exp(-clampedLogit))
-                    // Ensure we have a valid value before converting to Int
-                    let alphaFloat = sigmoid * 255.0
-                    if alphaFloat.isNaN || alphaFloat.isInfinite {
-                        ptr[i] = 0
-                    } else {
-                        ptr[i] = UInt8(min(255, max(0, Int(alphaFloat + 0.5))))
-                    }
-                }
+                // Vectorized sigmoid: 1/(1+exp(-x)) using Accelerate
+                var negated = [Float](repeating: 0, count: count)
+                var expResult = [Float](repeating: 0, count: count)
+                var sigmoid = [Float](repeating: 0, count: count)
+                var scaled = [Float](repeating: 0, count: count)
+
+                // Clamp to [-50, 50], negate, exp, add 1, reciprocal
+                var clampMin: Float = -50
+                var clampMax: Float = 50
+                vDSP_vclip(logits, 1, &clampMin, &clampMax, &negated, 1, vDSP_Length(count))
+                vDSP_vneg(negated, 1, &negated, 1, vDSP_Length(count))
+                var n = Int32(count)
+                vvexpf(&expResult, negated, &n)
+                var one: Float = 1.0
+                vDSP_vsadd(expResult, 1, &one, &expResult, 1, vDSP_Length(count))
+                vvrecf(&sigmoid, expResult, &n)
+
+                // Scale to [0, 255]
+                var scale: Float = 255.0
+                vDSP_vsmul(sigmoid, 1, &scale, &scaled, 1, vDSP_Length(count))
+
+                // Convert to UInt8
+                var scaledU = scaled  // vDSP_vfixu8 needs mutable
+                vDSP_vfixu8(&scaledU, 1, ptr, 1, vDSP_Length(count))
             }
         }
-        
+
         return alphaData
     }
     
@@ -547,61 +538,37 @@ public final class Postprocessor {
         height: Int,
         threshold: Float
     ) -> Data {
-        var alphaData = Data(count: width * height)
-        
-        alphaData.withUnsafeMutableBytes { buffer in
-            guard let ptr = buffer.bindMemory(to: UInt8.self).baseAddress else { return }
-            
-            if threshold > 0 {
-                // Apply threshold
-                for i in 0..<(width * height) {
-                    ptr[i] = logits[i] > threshold ? 255 : 0
-                }
-            } else {
-                // Convert logits to alpha using sigmoid
-                for i in 0..<(width * height) {
-                    let logitValue = logits[i]
-                    // Clamp logit values to prevent overflow/underflow
-                    let clampedLogit = min(50, max(-50, logitValue))
-                    let sigmoid = 1.0 / (1.0 + exp(-clampedLogit))
-                    // Ensure we have a valid value before converting to Int
-                    let alphaFloat = sigmoid * 255.0
-                    if alphaFloat.isNaN || alphaFloat.isInfinite {
-                        ptr[i] = 0
-                    } else {
-                        ptr[i] = UInt8(min(255, max(0, Int(alphaFloat + 0.5))))
-                    }
-                }
-            }
-        }
-        
-        return alphaData
+        // Delegate to the vectorized implementation
+        return createAlphaMaskForSingle(from: logits, width: width, height: height, threshold: threshold)
     }
     
     private func createCGImage(from alpha: Data, width: Int, height: Int) -> CGImage {
         let bytesPerPixel = 4
         let bytesPerRow = bytesPerPixel * width
-        
-        // Create RGBA data
-        var pixelData = [UInt8](repeating: 0, count: height * bytesPerRow)
-        
+        let pixelCount = width * height
+
+        // Create RGBA data with vectorized fill
+        var pixelData = [UInt8](repeating: 0, count: pixelCount * bytesPerPixel)
+
         alpha.withUnsafeBytes { buffer in
-            guard let ptr = buffer.bindMemory(to: UInt8.self).baseAddress else { return }
-            
-            for y in 0..<height {
-                for x in 0..<width {
-                    let alphaValue = ptr[y * width + x]
-                    let pixelIndex = y * bytesPerRow + x * bytesPerPixel
-                    
-                    // Set blue color with alpha (for better visibility)
-                    pixelData[pixelIndex] = 30       // R
-                    pixelData[pixelIndex + 1] = 144  // G  
-                    pixelData[pixelIndex + 2] = 255  // B (DodgerBlue)
-                    pixelData[pixelIndex + 3] = alphaValue // A
+            guard let alphaPtr = buffer.bindMemory(to: UInt8.self).baseAddress else { return }
+
+            pixelData.withUnsafeMutableBufferPointer { dst in
+                let base = dst.baseAddress!
+                // Fill RGBA channels: R=30, G=144, B=255, A=alpha
+                // Use stride-4 writes
+                var i = 0
+                while i < pixelCount {
+                    let p = i * 4
+                    base[p]     = 30        // R
+                    base[p + 1] = 144       // G
+                    base[p + 2] = 255       // B
+                    base[p + 3] = alphaPtr[i] // A
+                    i += 1
                 }
             }
         }
-        
+
         // Create CGImage
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
@@ -621,18 +588,30 @@ public final class Postprocessor {
                 intent: .defaultIntent
               ) else {
             // Fallback: create a simple black image
-            let context = CGContext(
+            guard let context = CGContext(
                 data: nil,
-                width: width,
-                height: height,
+                width: max(1, width),
+                height: max(1, height),
                 bitsPerComponent: 8,
-                bytesPerRow: width * 4,
+                bytesPerRow: max(1, width) * 4,
                 space: colorSpace,
                 bitmapInfo: bitmapInfo.rawValue
-            )!
+            ),
+            let fallbackImage = context.makeImage() else {
+                // Ultimate fallback: 1x1 transparent pixel
+                let onePixel: [UInt8] = [0, 0, 0, 0]
+                let fallbackProvider = CGDataProvider(data: NSData(bytes: onePixel, length: 4))!
+                return CGImage(
+                    width: 1, height: 1,
+                    bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 4,
+                    space: colorSpace, bitmapInfo: bitmapInfo,
+                    provider: fallbackProvider,
+                    decode: nil, shouldInterpolate: false, intent: .defaultIntent
+                )!
+            }
             context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            return context.makeImage()!
+            return fallbackImage
         }
         
         return cgImage

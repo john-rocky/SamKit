@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <android/bitmap.h>
+#include <cmath>
 #include <cstring>
 #include <vector>
 #include <memory>
@@ -89,33 +90,38 @@ Java_com_samkit_NativePreprocessor_processBitmap(
     
     // Convert tensor to Java ByteBuffer
     jclass byteBufferClass = env->FindClass("java/nio/ByteBuffer");
+    if (byteBufferClass == nullptr) { return nullptr; }
     jmethodID allocateDirect = env->GetStaticMethodID(
-        byteBufferClass, 
-        "allocateDirect", 
+        byteBufferClass,
+        "allocateDirect",
         "(I)Ljava/nio/ByteBuffer;"
     );
-    
+    if (allocateDirect == nullptr) { return nullptr; }
+
     size_t bufferSize = tensor.bytes();
     jobject buffer = env->CallStaticObjectMethod(
         byteBufferClass,
         allocateDirect,
         static_cast<jint>(bufferSize)
     );
-    
+    if (buffer == nullptr) { return nullptr; }
+
     // Copy tensor data to buffer
     void* bufferData = env->GetDirectBufferAddress(buffer);
     if (bufferData != nullptr) {
         tensor.copyTo(bufferData);
     }
-    
+
     // Create TransformParams object
     jclass transformClass = env->FindClass("com/samkit/TransformParams");
+    if (transformClass == nullptr) { return nullptr; }
     jmethodID transformConstructor = env->GetMethodID(
         transformClass,
         "<init>",
         "(FFFIII)V"
     );
-    
+    if (transformConstructor == nullptr) { return nullptr; }
+
     jobject transformObj = env->NewObject(
         transformClass,
         transformConstructor,
@@ -126,22 +132,25 @@ Java_com_samkit_NativePreprocessor_processBitmap(
         transform.original_height,
         transform.model_size
     );
-    
+    if (transformObj == nullptr) { return nullptr; }
+
     // Create Pair object
     jclass pairClass = env->FindClass("kotlin/Pair");
+    if (pairClass == nullptr) { return nullptr; }
     jmethodID pairConstructor = env->GetMethodID(
         pairClass,
         "<init>",
         "(Ljava/lang/Object;Ljava/lang/Object;)V"
     );
-    
+    if (pairConstructor == nullptr) { return nullptr; }
+
     jobject pair = env->NewObject(
         pairClass,
         pairConstructor,
         buffer,
         transformObj
     );
-    
+
     return pair;
 }
 
@@ -189,8 +198,10 @@ Java_com_samkit_NativePostprocessor_processMasks(
     
     // Convert to tensors
     int numMasks = scoreSize / sizeof(float);
-    int maskHeight = 256; // Typical for MobileSAM
-    int maskWidth = 256;
+    int totalMaskElements = maskSize / sizeof(float);
+    int pixelsPerMask = (numMasks > 0) ? totalMaskElements / numMasks : 0;
+    int maskHeight = static_cast<int>(std::sqrt(static_cast<double>(pixelsPerMask)));
+    int maskWidth = (maskHeight > 0) ? pixelsPerMask / maskHeight : 0;
     
     samkit::Tensor maskTensor = samkit::Tensor::fromFloat(
         maskData,
@@ -242,26 +253,34 @@ Java_com_samkit_NativePostprocessor_processMasks(
     
     // Convert result to Java object
     jclass resultClass = env->FindClass("com/samkit/SamResult");
+    if (resultClass == nullptr) { return nullptr; }
     jclass maskClass = env->FindClass("com/samkit/SamMask");
+    if (maskClass == nullptr) { return nullptr; }
     jclass listClass = env->FindClass("java/util/ArrayList");
-    
+    if (listClass == nullptr) { return nullptr; }
+
     jmethodID resultConstructor = env->GetMethodID(
         resultClass,
         "<init>",
         "(Ljava/util/List;ZLjava/lang/Throwable;)V"
     );
-    
+    if (resultConstructor == nullptr) { return nullptr; }
+
     jmethodID maskConstructor = env->GetMethodID(
         maskClass,
         "<init>",
         "(II[F[BF)V"
     );
-    
+    if (maskConstructor == nullptr) { return nullptr; }
+
     jmethodID listConstructor = env->GetMethodID(listClass, "<init>", "()V");
+    if (listConstructor == nullptr) { return nullptr; }
     jmethodID listAdd = env->GetMethodID(listClass, "add", "(Ljava/lang/Object;)Z");
-    
+    if (listAdd == nullptr) { return nullptr; }
+
     // Create mask list
     jobject maskList = env->NewObject(listClass, listConstructor);
+    if (maskList == nullptr) { return nullptr; }
     
     for (const auto& mask : result.masks) {
         // Convert logits to Java array if present

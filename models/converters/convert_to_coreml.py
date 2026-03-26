@@ -31,57 +31,47 @@ class SAMEncoderWrapper(nn.Module):
 
 
 class SAMDecoderWrapper(nn.Module):
-    """Wrapper for SAM mask decoder to handle Core ML conversion"""
-    
-    def __init__(self, decoder, image_size=1024):
+    """Wrapper for SAM mask decoder for Core ML conversion.
+
+    Prompt encoding uses index_put_ which CoreML does not support,
+    so this wrapper takes pre-computed embeddings as input.
+    Prompt encoding should be done in Swift at runtime.
+    """
+
+    def __init__(self, mask_decoder, prompt_encoder, image_size=1024):
         super().__init__()
-        self.decoder = decoder
+        self.mask_decoder = mask_decoder
+        self.prompt_encoder = prompt_encoder
         self.image_size = image_size
-        self.embed_dim = decoder.embed_dim if hasattr(decoder, 'embed_dim') else 256
-        
-    def forward(self, image_embeddings, point_coords, point_labels, mask_input, has_mask_input):
+        # Cache the dense positional encoding (constant)
+        self.register_buffer(
+            "image_pe", prompt_encoder.get_dense_pe()
+        )
+
+    def forward(self, image_embeddings, sparse_embeddings, dense_embeddings):
         """
         Args:
             image_embeddings: (1, embed_dim, H/16, W/16)
-            point_coords: (1, N, 2) - xy coordinates
-            point_labels: (1, N) - 0 or 1 labels
-            mask_input: (1, 1, 256, 256) - previous mask
-            has_mask_input: (1,) - whether mask_input is valid
+            sparse_embeddings: (1, N, embed_dim) - from prompt encoder
+            dense_embeddings: (1, embed_dim, H/16, W/16) - from prompt encoder
         """
-        # Prepare inputs for decoder
-        sparse_embeddings = self._embed_points(point_coords, point_labels)
-        dense_embeddings = self._embed_masks(mask_input) if has_mask_input[0] > 0 else None
-        
-        # Run decoder
-        masks, iou_predictions = self.decoder(
+        masks, iou_predictions = self.mask_decoder(
             image_embeddings=image_embeddings,
-            image_pe=self.decoder.get_dense_pe(),
+            image_pe=self.image_pe,
             sparse_prompt_embeddings=sparse_embeddings,
             dense_prompt_embeddings=dense_embeddings,
-            multimask_output=True
+            multimask_output=True,
         )
-        
+
         return masks, iou_predictions
-    
-    def _embed_points(self, coords, labels):
-        """Embed point prompts"""
-        # Simplified point embedding
-        # In real implementation, this would use the prompt encoder
-        return torch.randn(1, coords.shape[1], self.embed_dim)
-    
-    def _embed_masks(self, masks):
-        """Embed mask prompts"""
-        # Simplified mask embedding
-        return torch.randn(1, self.embed_dim, 64, 64)
 
 
-def load_sam_model(model_type: str, checkpoint_path: Optional[str] = None) -> Tuple[nn.Module, nn.Module]:
-    """Load SAM or MobileSAM model"""
-    
+def load_sam_model(model_type: str, checkpoint_path: Optional[str] = None):
+    """Load SAM or MobileSAM model. Returns (image_encoder, mask_decoder, prompt_encoder)."""
+
     if model_type.startswith("sam2"):
-        # Load SAM 2.1 model
         from segment_anything import sam_model_registry
-        
+
         if model_type == "sam2_tiny":
             model = sam_model_registry["vit_t"](checkpoint=checkpoint_path)
         elif model_type == "sam2_small":
@@ -94,16 +84,15 @@ def load_sam_model(model_type: str, checkpoint_path: Optional[str] = None) -> Tu
             model = sam_model_registry["vit_b_plus"](checkpoint=checkpoint_path)
         else:
             raise ValueError(f"Unknown SAM model type: {model_type}")
-            
+
     elif model_type == "mobile_sam":
-        # Load MobileSAM model
         from mobile_sam import sam_model_registry
         model = sam_model_registry["vit_t"](checkpoint=checkpoint_path)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-    
+
     model.eval()
-    return model.image_encoder, model.mask_decoder
+    return model.image_encoder, model.mask_decoder, model.prompt_encoder
 
 
 def convert_encoder(encoder: nn.Module, 
@@ -125,16 +114,13 @@ def convert_encoder(encoder: nn.Module,
     with torch.no_grad():
         traced_model = torch.jit.trace(wrapped_encoder, example_input)
     
-    # Convert to Core ML
+    # Convert to Core ML (TensorType so Swift can pass pre-normalized MLMultiArray)
     mlmodel = ct.convert(
         traced_model,
         inputs=[
-            ct.ImageType(
+            ct.TensorType(
                 name="image",
                 shape=(1, 3, image_size, image_size),
-                scale=1.0/255.0,
-                bias=[0, 0, 0],
-                color_layout=ct.colorlayout.RGB
             )
         ],
         outputs=[
@@ -158,57 +144,51 @@ def convert_encoder(encoder: nn.Module,
 
 
 def convert_decoder(decoder: nn.Module,
+                   prompt_encoder: nn.Module,
                    model_name: str,
                    embed_dim: int = 256,
                    image_size: int = 1024,
                    output_dir: Path = Path(".")):
     """Convert SAM decoder to Core ML"""
-    
+
     print(f"Converting {model_name} decoder to Core ML...")
-    
-    # Wrap decoder
-    wrapped_decoder = SAMDecoderWrapper(decoder, image_size)
+
+    # Wrap decoder with prompt encoder
+    wrapped_decoder = SAMDecoderWrapper(decoder, prompt_encoder, image_size)
     wrapped_decoder.eval()
     
-    # Prepare sample inputs
-    embed_size = image_size // 16  # Typical for ViT-based models
+    # Prepare sample inputs (pre-computed embeddings, no prompt encoder)
+    embed_size = image_size // 16
+    num_points = 3  # typical: 2 points + 1 padding token
     image_embeddings = torch.randn(1, embed_dim, embed_size, embed_size)
-    point_coords = torch.randn(1, 5, 2) * image_size  # 5 points
-    point_labels = torch.randint(0, 2, (1, 5)).float()  # Binary labels
-    mask_input = torch.randn(1, 1, 256, 256)
-    has_mask_input = torch.tensor([0.0])  # No mask input initially
-    
+    sparse_embeddings = torch.randn(1, num_points, embed_dim)
+    dense_embeddings = torch.randn(1, embed_dim, embed_size, embed_size)
+
     # Trace the model
     with torch.no_grad():
         traced_model = torch.jit.trace(
             wrapped_decoder,
-            (image_embeddings, point_coords, point_labels, mask_input, has_mask_input)
+            (image_embeddings, sparse_embeddings, dense_embeddings)
         )
-    
-    # Define flexible input shapes for Core ML
+
+    # Define input shapes for Core ML
     ct_inputs = [
         ct.TensorType(
             name="image_embeddings",
             shape=(1, embed_dim, embed_size, embed_size)
         ),
         ct.TensorType(
-            name="point_coords",
-            shape=(1, ct.RangeDim(0, 10), 2)  # Variable number of points
+            name="sparse_embeddings",
+            shape=ct.EnumeratedShapes(
+                shapes=[[1, i, embed_dim] for i in range(1, 11)]
+            )
         ),
         ct.TensorType(
-            name="point_labels",
-            shape=(1, ct.RangeDim(0, 10))
+            name="dense_embeddings",
+            shape=(1, embed_dim, embed_size, embed_size)
         ),
-        ct.TensorType(
-            name="mask_input",
-            shape=(1, 1, 256, 256)
-        ),
-        ct.TensorType(
-            name="has_mask_input",
-            shape=(1,)
-        )
     ]
-    
+
     # Convert to Core ML
     mlmodel = ct.convert(
         traced_model,
@@ -235,11 +215,18 @@ def convert_decoder(decoder: nn.Module,
 
 
 def compute_model_hash(model_path: Path) -> str:
-    """Compute SHA256 hash of model file"""
+    """Compute SHA256 hash of model file or directory (mlpackage)"""
     sha256 = hashlib.sha256()
-    with open(model_path, 'rb') as f:
-        for chunk in iter(lambda: f.read(4096), b''):
-            sha256.update(chunk)
+    if model_path.is_dir():
+        for fpath in sorted(model_path.rglob("*")):
+            if fpath.is_file():
+                with open(fpath, 'rb') as f:
+                    for chunk in iter(lambda: f.read(4096), b''):
+                        sha256.update(chunk)
+    else:
+        with open(model_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                sha256.update(chunk)
     return sha256.hexdigest()
 
 
@@ -315,29 +302,30 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Load model
-    encoder, decoder = load_sam_model(args.model, args.checkpoint)
-    
+    encoder, decoder, prompt_enc = load_sam_model(args.model, args.checkpoint)
+
     # Convert encoder and decoder
     encoder_path = convert_encoder(
-        encoder, 
+        encoder,
         args.model,
         args.image_size,
         output_dir
     )
-    
+
     # Determine embedding dimension based on model
     embed_dims = {
         "sam2_tiny": 96,
-        "sam2_small": 384, 
+        "sam2_small": 384,
         "sam2_base": 768,
         "sam2_large": 1024,
         "sam2_base_plus": 768,
         "mobile_sam": 256
     }
     embed_dim = embed_dims.get(args.model, 256)
-    
+
     decoder_path = convert_decoder(
         decoder,
+        prompt_enc,
         args.model,
         embed_dim,
         args.image_size,

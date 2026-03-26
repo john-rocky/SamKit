@@ -181,62 +181,69 @@ public final class Preprocessor {
     private func imageToMLMultiArray(_ image: CGImage) throws -> MLMultiArray {
         // Create MLMultiArray in CHW format (3, H, W)
         let array = try MLMultiArray(shape: [3, modelSize as NSNumber, modelSize as NSNumber], dataType: .float32)
-        
-        // Get pixel data
+
         let width = image.width
         let height = image.height
         let bytesPerPixel = 4
         let bytesPerRow = bytesPerPixel * width
-        let bitsPerComponent = 8
-        
+        let pixelCount = width * height
+
         var pixelData = [UInt8](repeating: 0, count: height * bytesPerRow)
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        
+
         guard let context = CGContext(
             data: &pixelData,
             width: width,
             height: height,
-            bitsPerComponent: bitsPerComponent,
+            bitsPerComponent: 8,
             bytesPerRow: bytesPerRow,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
         ) else {
             throw SamError.preprocessingFailed("Failed to create bitmap context")
         }
-        
+
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        
-        // Copy to MLMultiArray in CHW format
+
         let ptr = array.dataPointer.bindMemory(to: Float32.self, capacity: array.count)
         let channelSize = modelSize * modelSize
-        
-        for y in 0..<height {
-            for x in 0..<width {
-                let pixelIndex = y * bytesPerRow + x * bytesPerPixel
-                
-                // R channel
-                ptr[0 * channelSize + y * width + x] = Float(pixelData[pixelIndex])
-                // G channel
-                ptr[1 * channelSize + y * width + x] = Float(pixelData[pixelIndex + 1])
-                // B channel
-                ptr[2 * channelSize + y * width + x] = Float(pixelData[pixelIndex + 2])
+
+        // Convert UInt8 RGBX interleaved → Float32 planar CHW using vDSP
+        // Extract each channel with stride-4 access, then convert UInt8→Float
+        var rU8 = [UInt8](repeating: 0, count: pixelCount)
+        var gU8 = [UInt8](repeating: 0, count: pixelCount)
+        var bU8 = [UInt8](repeating: 0, count: pixelCount)
+
+        pixelData.withUnsafeBufferPointer { src in
+            let base = src.baseAddress!
+            for i in 0..<pixelCount {
+                rU8[i] = base[i * 4]
+                gU8[i] = base[i * 4 + 1]
+                bU8[i] = base[i * 4 + 2]
             }
         }
-        
+
+        // UInt8 → Float32 using vDSP
+        let n = vDSP_Length(pixelCount)
+        vDSP_vfltu8(rU8, 1, ptr, 1, n)
+        vDSP_vfltu8(gU8, 1, ptr + channelSize, 1, n)
+        vDSP_vfltu8(bU8, 1, ptr + channelSize * 2, 1, n)
+
         return array
     }
-    
+
     private func normalize(_ array: MLMultiArray) {
         let ptr = array.dataPointer.bindMemory(to: Float32.self, capacity: array.count)
         let channelSize = modelSize * modelSize
-        
-        // Normalize each channel
+        let n = vDSP_Length(channelSize)
+
+        // Vectorized normalization: (x - mean) / std per channel
         for c in 0..<3 {
-            let channelStart = c * channelSize
-            for i in 0..<channelSize {
-                let idx = channelStart + i
-                ptr[idx] = (ptr[idx] - mean[c]) / std[c]
-            }
+            let channelPtr = ptr + c * channelSize
+            var negMean = -mean[c]
+            vDSP_vsadd(channelPtr, 1, &negMean, channelPtr, 1, n)
+            var invStd = 1.0 / std[c]
+            vDSP_vsmul(channelPtr, 1, &invStd, channelPtr, 1, n)
         }
     }
 }

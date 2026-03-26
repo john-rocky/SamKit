@@ -7,66 +7,96 @@ import Accelerate
 public final class SamSession {
     
     // MARK: - Properties
-    
+
     private let encoder: MLModel
     private let decoder: MLModel
     private let config: RuntimeConfig
     private let preprocessor: Preprocessor
     private let postprocessor: Postprocessor
-    
+    private let promptEncoder: PromptEncoder?
+    private let modelType: ModelType
+
     private var cachedEmbedding: MLMultiArray?
     private var transformParams: TransformParams?
     private let modelSize: Int
-    
+
     // MARK: - Initialization
-    
+
     public init(model: SamModelRef, config: RuntimeConfig = .bestAvailable) throws {
         self.config = config
         self.modelSize = model.inputSize
-        
+        self.modelType = model.modelType
+
         // Load Core ML models with optimized configuration
         let mlConfig = MLModelConfiguration()
         mlConfig.computeUnits = config.computeUnits.mlComputeUnits
-        
+
         // Enable low precision computation for better performance
         mlConfig.allowLowPrecisionAccumulationOnGPU = true
-        
-        // Set prediction options for better performance
-        // Note: optimizationHints property doesn't have .performance, using default
-        
+
         self.encoder = try MLModel(contentsOf: model.encoderURL, configuration: mlConfig)
         self.decoder = try MLModel(contentsOf: model.decoderURL, configuration: mlConfig)
-        
+
         // Initialize processors
         self.preprocessor = Preprocessor(modelSize: modelSize)
-        self.postprocessor = Postprocessor(modelSize: modelSize)
+        self.postprocessor = Postprocessor(
+            modelSize: modelSize,
+            isHuggingFaceModel: model.modelType != .mobileSam
+        )
+
+        // Load prompt encoder weights for MobileSAM (decoder does not include prompt encoding)
+        if model.modelType == .mobileSam,
+           let weightsURL = model.promptEncoderWeightsURL {
+            self.promptEncoder = try PromptEncoder(weightsURL: weightsURL)
+        } else {
+            self.promptEncoder = nil
+        }
     }
     
     // MARK: - Public Methods
     
     /// Set the image for segmentation
     public func setImage(_ image: CGImage) throws {
+        let t0 = CFAbsoluteTimeGetCurrent()
+
         // Clear previous cache
         cachedEmbedding = nil
         transformParams = nil
-        
+
         // Preprocess image
         let (processedImage, transform) = try preprocessor.process(image)
         self.transformParams = transform
-        
+
+        let t1 = CFAbsoluteTimeGetCurrent()
+
+        // Add batch dimension [3, H, W] → [1, 3, H, W] for models that expect it
+        let batchedImage: MLMultiArray
+        if processedImage.shape.count == 3 {
+            let s = processedImage.shape.map { $0.intValue }
+            batchedImage = try MLMultiArray(shape: [1, s[0] as NSNumber, s[1] as NSNumber, s[2] as NSNumber], dataType: .float32)
+            let src = processedImage.dataPointer.bindMemory(to: Float32.self, capacity: processedImage.count)
+            let dst = batchedImage.dataPointer.bindMemory(to: Float32.self, capacity: batchedImage.count)
+            memcpy(dst, src, processedImage.count * MemoryLayout<Float32>.size)
+        } else {
+            batchedImage = processedImage
+        }
+
         // Run encoder
         let encoderInput = try MLDictionaryFeatureProvider(dictionary: [
-            "image": processedImage
+            "image": batchedImage
         ])
-        
+
         let encoderOutput = try encoder.prediction(from: encoderInput)
-        
+
+        let t2 = CFAbsoluteTimeGetCurrent()
+
         // Cache embedding
         guard let embedding = encoderOutput.featureValue(for: "image_embeddings")?.multiArrayValue else {
             throw SamError.invalidModelOutput("Missing image_embeddings from encoder")
         }
-        
+
         self.cachedEmbedding = embedding
+        print("[SAMKit] setImage: preprocess=\(Int((t1-t0)*1000))ms encoder=\(Int((t2-t1)*1000))ms")
     }
     
     /// Run mask prediction with prompts
@@ -75,53 +105,54 @@ public final class SamSession {
         box: SamBox? = nil,
         maskInput: SamMaskRef? = nil,
         options: SamOptions = SamOptions()
-    ) async throws -> SamResult {
-        
+    ) throws -> SamResult {
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+
         guard let embedding = cachedEmbedding,
               let transform = transformParams else {
             throw SamError.imageNotSet
         }
-        
-        // Encode prompts
-        let (pointCoords, pointLabels) = try preprocessor.encodePoints(points, transform: transform)
-        let hasMaskInput = maskInput != nil ? 1.0 : 0.0
-        
-        // Prepare decoder inputs
-        var decoderInputs: [String: Any] = [
-            "image_embeddings": embedding,
-            "point_coords": pointCoords,
-            "point_labels": pointLabels,
-            "has_mask_input": MLMultiArray.scalar(Float(hasMaskInput))
-        ]
-        
-        // Add mask input if provided
-        if let maskInput = maskInput {
-            let encodedMask = try preprocessor.encodeMask(maskInput, transform: transform)
-            decoderInputs["mask_input"] = encodedMask
+
+        // Build decoder inputs depending on model type
+        let decoderInput: MLDictionaryFeatureProvider
+
+        if let promptEnc = promptEncoder {
+            let (sparseEmb, denseEmb) = try promptEnc.encode(points: points, transform: transform)
+            decoderInput = try MLDictionaryFeatureProvider(dictionary: [
+                "image_embeddings": embedding,
+                "sparse_embeddings": sparseEmb,
+                "dense_embeddings": denseEmb,
+            ])
         } else {
-            // Provide empty mask
-            decoderInputs["mask_input"] = try MLMultiArray.zeros(shape: [1, 1, 256, 256])
-        }
-        
-        // Run decoder
-        let decoderInput = try MLDictionaryFeatureProvider(dictionary: decoderInputs)
-        let decoderOutput = try await withCheckedThrowingContinuation { continuation in
-            Task {
-                do {
-                    let output = try decoder.prediction(from: decoderInput)
-                    continuation.resume(returning: output)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+            let (pointCoords, pointLabels) = try preprocessor.encodePoints(points, transform: transform)
+            var inputs: [String: Any] = [
+                "image_embeddings": embedding,
+                "point_coords": pointCoords,
+                "point_labels": pointLabels,
+                "has_mask_input": MLMultiArray.scalar(Float(maskInput != nil ? 1.0 : 0.0))
+            ]
+            if let maskInput = maskInput {
+                inputs["mask_input"] = try preprocessor.encodeMask(maskInput, transform: transform)
+            } else {
+                inputs["mask_input"] = try MLMultiArray.zeros(shape: [1, 1, 256, 256])
             }
+            decoderInput = try MLDictionaryFeatureProvider(dictionary: inputs)
         }
-        
+
+        let t1 = CFAbsoluteTimeGetCurrent()
+
+        // Run decoder
+        let decoderOutput = try decoder.prediction(from: decoderInput)
+
+        let t2 = CFAbsoluteTimeGetCurrent()
+
         // Extract masks and scores
         guard let maskLogits = decoderOutput.featureValue(for: "masks")?.multiArrayValue,
               let iouPredictions = decoderOutput.featureValue(for: "iou_predictions")?.multiArrayValue else {
             throw SamError.invalidModelOutput("Missing masks or iou_predictions from decoder")
         }
-        
+
         // Postprocess results
         let result = try postprocessor.process(
             maskLogits: maskLogits,
@@ -129,7 +160,10 @@ public final class SamSession {
             transform: transform,
             options: options
         )
-        
+
+        let t3 = CFAbsoluteTimeGetCurrent()
+        print("[SAMKit] prompt=\(Int((t1-t0)*1000))ms decoder=\(Int((t2-t1)*1000))ms postprocess=\(Int((t3-t2)*1000))ms total=\(Int((t3-t0)*1000))ms")
+
         return result
     }
     
@@ -147,30 +181,44 @@ public struct SamModelRef {
     public let decoderURL: URL
     public let inputSize: Int
     public let modelType: ModelType
-    
-    public init(encoderURL: URL, decoderURL: URL, inputSize: Int = 1024, modelType: ModelType) {
+    public let promptEncoderWeightsURL: URL?
+
+    public init(
+        encoderURL: URL,
+        decoderURL: URL,
+        inputSize: Int = 1024,
+        modelType: ModelType,
+        promptEncoderWeightsURL: URL? = nil
+    ) {
         self.encoderURL = encoderURL
         self.decoderURL = decoderURL
         self.inputSize = inputSize
         self.modelType = modelType
+        self.promptEncoderWeightsURL = promptEncoderWeightsURL
     }
-    
+
     /// Load model from bundle
     public static func bundled(_ modelType: ModelType) throws -> SamModelRef {
         let bundle = Bundle.main
-        
         let modelName = modelType.modelName
-        
+
         guard let encoderURL = bundle.url(forResource: "\(modelName)_encoder", withExtension: "mlmodelc"),
               let decoderURL = bundle.url(forResource: "\(modelName)_decoder", withExtension: "mlmodelc") else {
             throw SamError.modelNotFound
         }
-        
+
+        // Look for prompt encoder weights JSON (needed for MobileSAM)
+        let weightsURL = bundle.url(
+            forResource: "\(modelName)_prompt_encoder_weights",
+            withExtension: "json"
+        )
+
         return SamModelRef(
             encoderURL: encoderURL,
             decoderURL: decoderURL,
             inputSize: modelType.inputSize,
-            modelType: modelType
+            modelType: modelType,
+            promptEncoderWeightsURL: weightsURL
         )
     }
 }

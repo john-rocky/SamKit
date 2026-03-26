@@ -1,0 +1,29 @@
+{
+  "name": "mobile_sam",
+  "version": "1.0.0",
+  "input_size": 1024,
+  "encoder": {
+    "type": "coreml",
+    "path": "mobile_sam_encoder.mlpackage",
+    "precision": "fp16",
+    "hash": "369f238d6ef9f8600b04653b1e2e876ab36624014f35e4e49d7c54f4ce789248"
+  },
+  "decoder": {
+    "type": "coreml",
+    "path": "mobile_sam_decoder.mlpackage",
+    "precision": "fp16",
+    "hash": "39641dc703aae08f6b1a70419095b4e6a60d834ccd49bb2ebe78dc29839201f9"
+  },
+  "normalize": {
+    "mean": [
+      123.675,
+      116.28,
+      103.53
+    ],
+    "std": [
+      58.395,
+      57.12,
+      57.375
+    ]
+  }
+}
