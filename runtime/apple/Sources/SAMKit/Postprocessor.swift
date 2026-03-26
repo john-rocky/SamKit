@@ -555,15 +555,17 @@ public final class Postprocessor {
 
             pixelData.withUnsafeMutableBufferPointer { dst in
                 let base = dst.baseAddress!
-                // Fill RGBA channels: R=30, G=144, B=255, A=alpha
-                // Use stride-4 writes
+                // Fill premultiplied RGBA channels: R=30, G=144, B=255, A=alpha
+                // CGBitmapInfo is premultipliedLast, so RGB must be multiplied by alpha/255
                 var i = 0
                 while i < pixelCount {
                     let p = i * 4
-                    base[p]     = 30        // R
-                    base[p + 1] = 144       // G
-                    base[p + 2] = 255       // B
-                    base[p + 3] = alphaPtr[i] // A
+                    let a = alphaPtr[i]
+                    let af = Float(a) / 255.0
+                    base[p]     = UInt8(30.0 * af)    // R (premultiplied)
+                    base[p + 1] = UInt8(144.0 * af)   // G (premultiplied)
+                    base[p + 2] = UInt8(255.0 * af)   // B (premultiplied)
+                    base[p + 3] = a                    // A
                     i += 1
                 }
             }
@@ -633,17 +635,18 @@ extension SamMask {
         
         alpha.withUnsafeBytes { buffer in
             guard let ptr = buffer.bindMemory(to: UInt8.self).baseAddress else { return }
-            
+
             for y in 0..<height {
                 for x in 0..<width {
                     let alphaValue = ptr[y * width + x]
                     let pixelIndex = y * bytesPerRow + x * bytesPerPixel
-                    
-                    // Set white color with alpha
-                    pixelData[pixelIndex] = 255      // R
-                    pixelData[pixelIndex + 1] = 255  // G
-                    pixelData[pixelIndex + 2] = 255  // B
-                    pixelData[pixelIndex + 3] = alphaValue // A
+
+                    // Set white color with premultiplied alpha
+                    // premultipliedLast: RGB must be multiplied by alpha/255
+                    pixelData[pixelIndex] = alphaValue      // R (255 * alpha/255 = alpha)
+                    pixelData[pixelIndex + 1] = alphaValue  // G
+                    pixelData[pixelIndex + 2] = alphaValue  // B
+                    pixelData[pixelIndex + 3] = alphaValue  // A
                 }
             }
         }
