@@ -680,9 +680,20 @@ extension SamMask {
             bitmapInfo: bitmapInfo.rawValue
         ) else { return nil }
 
-        // Create grayscale mask image from alpha data
+        // Binarize alpha for crisp object extraction (sigmoid values → 0 or 255)
+        var binaryAlpha = Data(count: alpha.count)
+        alpha.withUnsafeBytes { src in
+            binaryAlpha.withUnsafeMutableBytes { dst in
+                let srcPtr = src.bindMemory(to: UInt8.self).baseAddress!
+                let dstPtr = dst.bindMemory(to: UInt8.self).baseAddress!
+                for i in 0..<alpha.count {
+                    dstPtr[i] = srcPtr[i] >= 128 ? 255 : 0
+                }
+            }
+        }
+
         let maskColorSpace = CGColorSpaceCreateDeviceGray()
-        guard let maskProvider = CGDataProvider(data: alpha as CFData),
+        guard let maskProvider = CGDataProvider(data: binaryAlpha as CFData),
               let maskCGImage = CGImage(
                 width: width,
                 height: height,
@@ -713,17 +724,22 @@ extension SamMask {
 
         let w = first.width
         let h = first.height
-        var combined = Data(count: w * h)
+        let pixelCount = w * h
+        var combined = Data(count: pixelCount)
         combined.withUnsafeMutableBytes { dst in
             let dstPtr = dst.bindMemory(to: UInt8.self).baseAddress!
             for mask in masks {
                 mask.alpha.withUnsafeBytes { src in
                     let srcPtr = src.bindMemory(to: UInt8.self).baseAddress!
-                    let count = min(w * h, mask.alpha.count)
+                    let count = min(pixelCount, mask.alpha.count)
                     for i in 0..<count {
                         dstPtr[i] = max(dstPtr[i], srcPtr[i])
                     }
                 }
+            }
+            // Binarize combined mask for crisp object extraction
+            for i in 0..<pixelCount {
+                dstPtr[i] = dstPtr[i] >= 128 ? 255 : 0
             }
         }
 
