@@ -254,7 +254,7 @@ public struct RuntimeConfig {
         case neuralEnginePreferred
         case bestAvailable
         
-        var mlComputeUnits: MLComputeUnits {
+        public var mlComputeUnits: MLComputeUnits {
             switch self {
             case .cpuOnly: return .cpuOnly
             case .gpuPreferred: return .cpuAndGPU

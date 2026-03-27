@@ -19,6 +19,12 @@
 		A012345D1234567890ABCDEF /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A012345C1234567890ABCDEF /* Preview Assets.xcassets */; };
 		A01234651234567890ABCDEF /* SAMKit in Frameworks */ = {isa = PBXBuildFile; productRef = A01234641234567890ABCDEF /* SAMKit */; };
 		A01234671234567890ABCDEF /* SAMKitUI in Frameworks */ = {isa = PBXBuildFile; productRef = A01234661234567890ABCDEF /* SAMKitUI */; };
+		C0GRND011234567890ABCDEF /* SAMKitGrounding in Frameworks */ = {isa = PBXBuildFile; productRef = C0GRND001234567890ABCDEF /* SAMKitGrounding */; };
+		C0GRND021234567890ABCDEF /* TextSegmentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0GRND031234567890ABCDEF /* TextSegmentationView.swift */; };
+		D0GRND041234567890ABCDEF /* clip_text_encoder.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = D0GRND071234567890ABCDEF /* clip_text_encoder.mlpackage */; };
+		D0GRND051234567890ABCDEF /* yoloworld_detector.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = D0GRND081234567890ABCDEF /* yoloworld_detector.mlpackage */; };
+		D0GRND061234567890ABCDEF /* clip_vocab.json in Resources */ = {isa = PBXBuildFile; fileRef = D0GRND091234567890ABCDEF /* clip_vocab.json */; };
+		E0CV04011234567890ABCDEF /* cv4_params.json in Resources */ = {isa = PBXBuildFile; fileRef = E0CV04021234567890ABCDEF /* cv4_params.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +40,11 @@
 		A01234591234567890ABCDEF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A012345C1234567890ABCDEF /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		A012345E1234567890ABCDEF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C0GRND031234567890ABCDEF /* TextSegmentationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSegmentationView.swift; sourceTree = "<group>"; };
+		D0GRND071234567890ABCDEF /* clip_text_encoder.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = clip_text_encoder.mlpackage; sourceTree = "<group>"; };
+		D0GRND081234567890ABCDEF /* yoloworld_detector.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = yoloworld_detector.mlpackage; sourceTree = "<group>"; };
+		D0GRND091234567890ABCDEF /* clip_vocab.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = clip_vocab.json; sourceTree = "<group>"; };
+		E0CV04021234567890ABCDEF /* cv4_params.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = cv4_params.json; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,6 +54,7 @@
 			files = (
 				A01234651234567890ABCDEF /* SAMKit in Frameworks */,
 				A01234671234567890ABCDEF /* SAMKitUI in Frameworks */,
+				C0GRND011234567890ABCDEF /* SAMKitGrounding in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -76,6 +88,11 @@
 				B0MSAM012345678900000006 /* mobile_sam_prompt_encoder_weights.json */,
 				A01234551234567890ABCDEF /* SAMKitDemoApp.swift */,
 				A01234571234567890ABCDEF /* ContentView.swift */,
+				C0GRND031234567890ABCDEF /* TextSegmentationView.swift */,
+				D0GRND071234567890ABCDEF /* clip_text_encoder.mlpackage */,
+				D0GRND081234567890ABCDEF /* yoloworld_detector.mlpackage */,
+				D0GRND091234567890ABCDEF /* clip_vocab.json */,
+				E0CV04021234567890ABCDEF /* cv4_params.json */,
 				A01234591234567890ABCDEF /* Assets.xcassets */,
 				A012345E1234567890ABCDEF /* Info.plist */,
 				A012345B1234567890ABCDEF /* Preview Content */,
@@ -110,6 +127,7 @@
 			packageProductDependencies = (
 				A01234641234567890ABCDEF /* SAMKit */,
 				A01234661234567890ABCDEF /* SAMKitUI */,
+				C0GRND001234567890ABCDEF /* SAMKitGrounding */,
 			);
 			productName = SAMKitDemo;
 			productReference = A01234521234567890ABCDEF /* SAMKitDemo.app */;
@@ -164,6 +182,10 @@
 				B0MSAM012345678900000001 /* mobile_sam_encoder.mlpackage in Resources */,
 				B0MSAM012345678900000002 /* mobile_sam_decoder.mlpackage in Resources */,
 				B0MSAM012345678900000003 /* mobile_sam_prompt_encoder_weights.json in Resources */,
+				D0GRND041234567890ABCDEF /* clip_text_encoder.mlpackage in Resources */,
+				D0GRND051234567890ABCDEF /* yoloworld_detector.mlpackage in Resources */,
+				D0GRND061234567890ABCDEF /* clip_vocab.json in Resources */,
+				E0CV04011234567890ABCDEF /* cv4_params.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -175,6 +197,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A01234581234567890ABCDEF /* ContentView.swift in Sources */,
+				C0GRND021234567890ABCDEF /* TextSegmentationView.swift in Sources */,
 				A01234561234567890ABCDEF /* SAMKitDemoApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -407,6 +430,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A01234631234567890ABCDEF /* XCLocalSwiftPackageReference "../../runtime/apple" */;
 			productName = SAMKitUI;
+		};
+		C0GRND001234567890ABCDEF /* SAMKitGrounding */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A01234631234567890ABCDEF /* XCLocalSwiftPackageReference "../../runtime/apple" */;
+			productName = SAMKitGrounding;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

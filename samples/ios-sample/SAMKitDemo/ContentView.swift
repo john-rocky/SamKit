@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import PhotosUI
 import SAMKit
+import SAMKitGrounding
 import SAMKitUI
 
 struct ContentView: View {
@@ -12,6 +13,7 @@ struct ContentView: View {
     @State private var selectedSam2Model: Sam2ModelType = .tiny
     @State private var useSeparateSam2 = false
     @State private var showSegmentationView = false
+    @State private var showTextSegmentationView = false
     @State private var isLoadingModel = false
     @State private var errorMessage: String?
     @State private var showError = false
@@ -119,26 +121,39 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                     }
                     
-                    // Segment Button
-                    Button(action: {
-                        startSegmentation()
-                    }) {
-                        if isLoadingModel {
-                            HStack {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .scaleEffect(0.8)
-                                Text("Loading Model...")
+                    // Segment Buttons
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            startSegmentation()
+                        }) {
+                            if isLoadingModel {
+                                HStack {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        .scaleEffect(0.8)
+                                    Text("Loading...")
+                                }
+                                .frame(maxWidth: .infinity)
+                            } else {
+                                Label("Point/Box", systemImage: "hand.point.up.left")
+                                    .frame(maxWidth: .infinity)
                             }
-                            .frame(maxWidth: .infinity)
-                        } else {
-                            Label("Start Segmentation", systemImage: "wand.and.stars")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(selectedImage == nil || isLoadingModel)
+
+                        Button(action: {
+                            showTextSegmentationView = true
+                        }) {
+                            Label("Text Prompt", systemImage: "text.magnifyingglass")
                                 .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        .controlSize(.large)
+                        .disabled(selectedImage == nil || isLoadingModel)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(selectedImage == nil || isLoadingModel)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 20)
@@ -163,6 +178,14 @@ struct ContentView: View {
                             modelType: selectedModel
                         )
                     }
+                }
+            }
+            .fullScreenCover(isPresented: $showTextSegmentationView) {
+                if let image = selectedImage {
+                    TextSegmentationView(
+                        image: image,
+                        samModelType: useSeparateSam2 ? .mobileSam : selectedModel
+                    )
                 }
             }
             .alert("Error", isPresented: $showError) {
@@ -481,12 +504,14 @@ enum InputMode: String, CaseIterable {
     case point = "Point"
     case box = "Box"
     case both = "Both"
-    
+    case text = "Text"
+
     var icon: String {
         switch self {
         case .point: return "hand.point.up.left"
         case .box: return "rectangle.dashed"
         case .both: return "rectangle.and.hand.point.up.left"
+        case .text: return "text.magnifyingglass"
         }
     }
 }

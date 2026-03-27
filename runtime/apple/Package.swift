@@ -15,6 +15,10 @@ let package = Package(
             targets: ["SAMKit"]
         ),
         .library(
+            name: "SAMKitGrounding",
+            targets: ["SAMKitGrounding"]
+        ),
+        .library(
             name: "SAMKitUI",
             targets: ["SAMKitUI"]
         ),
@@ -29,8 +33,13 @@ let package = Package(
             path: "Sources/SAMKit"
         ),
         .target(
-            name: "SAMKitUI",
+            name: "SAMKitGrounding",
             dependencies: ["SAMKit"],
+            path: "Sources/SAMKitGrounding"
+        ),
+        .target(
+            name: "SAMKitUI",
+            dependencies: ["SAMKit", "SAMKitGrounding"],
             path: "Sources/SAMKitUI"
         ),
         .testTarget(
