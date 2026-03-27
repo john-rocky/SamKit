@@ -256,13 +256,8 @@ public final class Sam2Session {
             let encodedBox = try preprocessor.encodeBox(box, transform: transform)
             promptInputs["boxes"] = encodedBox
         } else {
-            // Provide empty box with proper shape
+            // Provide zero box to signal "no box prompt"
             let emptyBox = try MLMultiArray(shape: [1, 1, 4], dataType: .float32)
-            // Set to full image bounds
-            emptyBox[[0, 0, 0] as [NSNumber]] = NSNumber(value: 0.0)
-            emptyBox[[0, 0, 1] as [NSNumber]] = NSNumber(value: 0.0)
-            emptyBox[[0, 0, 2] as [NSNumber]] = NSNumber(value: 1024.0)
-            emptyBox[[0, 0, 3] as [NSNumber]] = NSNumber(value: 1024.0)
             promptInputs["boxes"] = emptyBox
         }
         
