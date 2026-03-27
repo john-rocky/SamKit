@@ -2,6 +2,8 @@ import SwiftUI
 import UIKit
 import SAMKit
 import SAMKitGrounding
+import UniformTypeIdentifiers
+import Photos
 
 // MARK: - Input Mode
 
@@ -47,6 +49,12 @@ struct UnifiedSegmentationView: View {
     @State private var selectedTextIndices: Set<Int> = []
     @State private var errorMessage: String?
 
+    // Lift object state
+    @State private var liftedImage: UIImage?
+    @State private var showLiftedObject = false
+    @State private var toastMessage: String?
+    @State private var showShareSheet = false
+
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
@@ -91,6 +99,9 @@ struct UnifiedSegmentationView: View {
                             )
                             .onTapGesture { location in
                                 handleTap(at: location, geometry: geometry)
+                            }
+                            .onLongPressGesture(minimumDuration: 0.5) {
+                                handleLiftObject()
                             }
 
                         // SAM mask overlay (point/box)
@@ -252,6 +263,40 @@ struct UnifiedSegmentationView: View {
             }
         }
         .task { await setImageOnSessions() }
+        .overlay {
+            if showLiftedObject, let lifted = liftedImage {
+                liftedObjectOverlay(lifted)
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            if let message = toastMessage {
+                VStack {
+                    Spacer()
+                    Text(message)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(Color.black.opacity(0.75)))
+                        .padding(.bottom, 100)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        withAnimation { toastMessage = nil }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showShareSheet) {
+            if let lifted = liftedImage {
+                ActivityViewController(items: [lifted])
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: showLiftedObject)
+        .animation(.easeInOut(duration: 0.2), value: toastMessage != nil)
     }
 
     // MARK: - Controls Panel
@@ -518,6 +563,139 @@ struct UnifiedSegmentationView: View {
         }
     }
 
+    // MARK: - Object Lift
+
+    @ViewBuilder
+    private func liftedObjectOverlay(_ lifted: UIImage) -> some View {
+        ZStack {
+            Color.black.opacity(0.7)
+                .ignoresSafeArea()
+                .onTapGesture { dismissLift() }
+
+            VStack(spacing: 0) {
+                Spacer()
+
+                // Checkerboard + extracted object
+                Image(uiImage: lifted)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(32)
+                    .background(
+                        CheckerboardBackground()
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .padding(24)
+                    )
+                    .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
+                    .scaleEffect(showLiftedObject ? 1.0 : 0.9)
+
+                Spacer()
+
+                // Action buttons
+                HStack(spacing: 40) {
+                    Button { copyObject() } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.title2)
+                            Text("Copy")
+                                .font(.caption)
+                        }
+                    }
+                    Button { saveObject() } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.title2)
+                            Text("Save")
+                                .font(.caption)
+                        }
+                    }
+                    Button { shareObject() } label: {
+                        VStack(spacing: 6) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.title2)
+                            Text("Share")
+                                .font(.caption)
+                        }
+                    }
+                }
+                .foregroundColor(.white)
+                .padding(.bottom, 50)
+            }
+        }
+    }
+
+    private func handleLiftObject() {
+        guard let cgImage = image.cgImage else { return }
+
+        // Get current mask
+        let mask: SamMask?
+        if let result = samResult {
+            let idx = min(selectedMaskIndex, result.masks.count - 1)
+            mask = idx >= 0 ? result.masks[idx] : nil
+        } else if let result = textResult, !result.masks.isEmpty {
+            let indices = selectedTextIndices.isEmpty
+                ? Set(0..<result.masks.count)
+                : selectedTextIndices
+            // Use the first selected text mask
+            if let first = indices.sorted().first, first < result.masks.count {
+                mask = result.masks[first]
+            } else {
+                mask = nil
+            }
+        } else {
+            mask = nil
+        }
+
+        guard let mask = mask,
+              let extracted = mask.extractObject(from: cgImage) else { return }
+
+        liftedImage = UIImage(cgImage: extracted)
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+            showLiftedObject = true
+        }
+    }
+
+    private func dismissLift() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            showLiftedObject = false
+        }
+    }
+
+    private func copyObject() {
+        guard let lifted = liftedImage,
+              let pngData = lifted.pngData() else { return }
+        UIPasteboard.general.setData(pngData, forPasteboardType: UTType.png.identifier)
+        withAnimation { toastMessage = "Copied to clipboard" }
+        dismissLift()
+    }
+
+    private func saveObject() {
+        guard let lifted = liftedImage,
+              let pngData = lifted.pngData() else { return }
+
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else {
+                DispatchQueue.main.async {
+                    withAnimation { toastMessage = "Photo access denied" }
+                    dismissLift()
+                }
+                return
+            }
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                request.addResource(with: .photo, data: pngData, options: nil)
+            } completionHandler: { success, _ in
+                DispatchQueue.main.async {
+                    withAnimation { toastMessage = success ? "Saved to Photos" : "Save failed" }
+                    dismissLift()
+                }
+            }
+        }
+    }
+
+    private func shareObject() {
+        showShareSheet = true
+    }
+
     // MARK: - Coordinate Conversion
 
     private func viewToImage(_ viewPoint: CGPoint, viewSize: CGSize) -> CGPoint {
@@ -573,4 +751,41 @@ struct UnifiedSegmentationView: View {
             y: imagePoint.y / imageSize.height * displayedSize.height + offset.y
         )
     }
+}
+
+// MARK: - Checkerboard Background (indicates transparency)
+
+private struct CheckerboardBackground: View {
+    let tileSize: CGFloat = 10
+
+    var body: some View {
+        Canvas { context, size in
+            let cols = Int(ceil(size.width / tileSize))
+            let rows = Int(ceil(size.height / tileSize))
+            for row in 0..<rows {
+                for col in 0..<cols {
+                    let isLight = (row + col) % 2 == 0
+                    let rect = CGRect(
+                        x: CGFloat(col) * tileSize,
+                        y: CGFloat(row) * tileSize,
+                        width: tileSize,
+                        height: tileSize
+                    )
+                    context.fill(Path(rect), with: .color(isLight ? .white : Color(white: 0.85)))
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Share Sheet
+
+private struct ActivityViewController: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

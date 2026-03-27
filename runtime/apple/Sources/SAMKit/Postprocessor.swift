@@ -620,6 +620,54 @@ public final class Postprocessor {
     }
 }
 
+// MARK: - Object Extraction
+
+extension SamMask {
+    /// Extract the object from the source image using this mask as alpha channel.
+    /// Returns a CGImage with transparent background where the mask is zero.
+    public func extractObject(from sourceImage: CGImage) -> CGImage? {
+        let origWidth = sourceImage.width
+        let origHeight = sourceImage.height
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+
+        guard let context = CGContext(
+            data: nil,
+            width: origWidth,
+            height: origHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: origWidth * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else { return nil }
+
+        // Create grayscale mask image from alpha data
+        let maskColorSpace = CGColorSpaceCreateDeviceGray()
+        guard let maskProvider = CGDataProvider(data: alpha as CFData),
+              let maskCGImage = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 8,
+                bytesPerRow: width,
+                space: maskColorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: 0),
+                provider: maskProvider,
+                decode: nil,
+                shouldInterpolate: true,
+                intent: .defaultIntent
+              ) else { return nil }
+
+        // Clip to mask (auto-scales mask to fit rect) and draw source image
+        let rect = CGRect(x: 0, y: 0, width: origWidth, height: origHeight)
+        context.clip(to: rect, mask: maskCGImage)
+        context.draw(sourceImage, in: rect)
+
+        return context.makeImage()
+    }
+}
+
 // MARK: - Extensions for Mask Visualization
 
 extension SamMask {
