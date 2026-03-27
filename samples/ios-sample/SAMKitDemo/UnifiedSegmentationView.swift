@@ -5,22 +5,11 @@ import SAMKitGrounding
 import UniformTypeIdentifiers
 import Photos
 
-// MARK: - Input Mode
+// MARK: - Tool Mode
 
-enum InputMode: String, CaseIterable {
-    case point = "Point"
-    case box = "Box"
-    case both = "Both"
-    case text = "Text"
-
-    var icon: String {
-        switch self {
-        case .point: return "hand.point.up.left"
-        case .box: return "rectangle.dashed"
-        case .both: return "rectangle.and.hand.point.up.left"
-        case .text: return "text.magnifyingglass"
-        }
-    }
+enum ToolMode {
+    case point
+    case box
 }
 
 // MARK: - Unified Segmentation View
@@ -36,9 +25,7 @@ struct UnifiedSegmentationView: View {
     @State private var samResult: SamResult?
     @State private var textResult: TextSegmentationResult?
     @State private var isProcessing = false
-    @State private var showMask = true
-    @State private var selectedMaskIndex = 0
-    @State private var inputMode: InputMode = .point
+    @State private var toolMode: ToolMode = .point
     @State private var dragStart: CGPoint?
     @State private var dragEnd: CGPoint?
     @State private var showNegativePoints = false
@@ -48,6 +35,7 @@ struct UnifiedSegmentationView: View {
     @State private var textImageSet = false
     @State private var selectedTextIndices: Set<Int> = []
     @State private var errorMessage: String?
+    @FocusState private var isTextFieldFocused: Bool
 
     // Lift object state
     @State private var liftedImage: UIImage?
@@ -57,145 +45,95 @@ struct UnifiedSegmentationView: View {
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
-                // Image + overlays
-                GeometryReader { geometry in
-                    ZStack {
-                        // Base image
-                        Image(uiImage: image)
+            GeometryReader { geometry in
+                ZStack {
+                    // Base image
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            toolMode == .box ?
+                            DragGesture()
+                                .onChanged { value in
+                                    if dragStart == nil {
+                                        dragStart = value.startLocation
+                                    }
+                                    dragEnd = value.location
+                                }
+                                .onEnded { value in
+                                    guard let start = dragStart else { return }
+                                    let startPoint = viewToImage(start, viewSize: geometry.size)
+                                    let endPoint = viewToImage(value.location, viewSize: geometry.size)
+
+                                    let minX = min(startPoint.x, endPoint.x)
+                                    let minY = min(startPoint.y, endPoint.y)
+                                    let maxX = max(startPoint.x, endPoint.x)
+                                    let maxY = max(startPoint.y, endPoint.y)
+
+                                    boundingBox = SamBox(
+                                        x0: Float(minX), y0: Float(minY),
+                                        x1: Float(maxX), y1: Float(maxY)
+                                    )
+
+                                    dragStart = nil
+                                    dragEnd = nil
+                                    runSegmentation()
+                                }
+                            : nil
+                        )
+                        .onTapGesture { location in
+                            if isTextFieldFocused {
+                                isTextFieldFocused = false
+                            } else {
+                                handleTap(at: location, geometry: geometry)
+                            }
+                        }
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            handleLiftObject()
+                        }
+
+                    // SAM mask overlay (always show top mask)
+                    if let result = samResult, !result.masks.isEmpty {
+                        Image(uiImage: UIImage(cgImage: result.masks[0].cgImage))
                             .resizable()
                             .scaledToFit()
                             .frame(width: geometry.size.width, height: geometry.size.height)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                inputMode == .box || inputMode == .both ?
-                                DragGesture()
-                                    .onChanged { value in
-                                        if dragStart == nil {
-                                            dragStart = value.startLocation
-                                        }
-                                        dragEnd = value.location
-                                    }
-                                    .onEnded { value in
-                                        guard let start = dragStart else { return }
-                                        let startPoint = viewToImage(start, viewSize: geometry.size)
-                                        let endPoint = viewToImage(value.location, viewSize: geometry.size)
+                            .opacity(0.6)
+                            .allowsHitTesting(false)
+                    }
 
-                                        let minX = min(startPoint.x, endPoint.x)
-                                        let minY = min(startPoint.y, endPoint.y)
-                                        let maxX = max(startPoint.x, endPoint.x)
-                                        let maxY = max(startPoint.y, endPoint.y)
-
-                                        boundingBox = SamBox(
-                                            x0: Float(minX), y0: Float(minY),
-                                            x1: Float(maxX), y1: Float(maxY)
-                                        )
-
-                                        dragStart = nil
-                                        dragEnd = nil
-                                        runSegmentation()
-                                    }
-                                : nil
-                            )
-                            .onTapGesture { location in
-                                handleTap(at: location, geometry: geometry)
-                            }
-                            .onLongPressGesture(minimumDuration: 0.5) {
-                                handleLiftObject()
-                            }
-
-                        // SAM mask overlay (point/box)
-                        if showMask, let result = samResult {
-                            let safeIndex = min(selectedMaskIndex, result.masks.count - 1)
-                            if safeIndex >= 0 && safeIndex < result.masks.count {
-                                Image(uiImage: UIImage(cgImage: result.masks[safeIndex].cgImage))
+                    // Text mask overlays
+                    if let result = textResult {
+                        ForEach(Array(result.masks.enumerated()), id: \.offset) { index, mask in
+                            let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
+                            if isSelected {
+                                Image(uiImage: UIImage(cgImage: mask.cgImage))
                                     .resizable()
                                     .scaledToFit()
                                     .frame(width: geometry.size.width, height: geometry.size.height)
-                                    .opacity(0.6)
+                                    .opacity(0.5)
                                     .allowsHitTesting(false)
                             }
                         }
+                    }
 
-                        // Text mask overlays
-                        if showMask, let result = textResult {
-                            ForEach(Array(result.masks.enumerated()), id: \.offset) { index, mask in
-                                let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
-                                if isSelected {
-                                    Image(uiImage: UIImage(cgImage: mask.cgImage))
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(width: geometry.size.width, height: geometry.size.height)
-                                        .opacity(0.5)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                        }
-
-                        // Text detection bounding boxes
-                        if let result = textResult {
-                            ForEach(Array(result.detections.enumerated()), id: \.offset) { index, detection in
-                                let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
-                                let topLeft = imageToView(
-                                    CGPoint(x: CGFloat(detection.box.x0), y: CGFloat(detection.box.y0)),
-                                    viewSize: geometry.size
-                                )
-                                let bottomRight = imageToView(
-                                    CGPoint(x: CGFloat(detection.box.x1), y: CGFloat(detection.box.y1)),
-                                    viewSize: geometry.size
-                                )
-
-                                Rectangle()
-                                    .stroke(isSelected ? Color.green : Color.gray, lineWidth: isSelected ? 2 : 1)
-                                    .frame(
-                                        width: abs(bottomRight.x - topLeft.x),
-                                        height: abs(bottomRight.y - topLeft.y)
-                                    )
-                                    .position(
-                                        x: topLeft.x + (bottomRight.x - topLeft.x) / 2,
-                                        y: topLeft.y + (bottomRight.y - topLeft.y) / 2
-                                    )
-                                    .onTapGesture { toggleTextSelection(index) }
-
-                                Text("\(detection.label) \(String(format: "%.0f%%", detection.confidence * 100))")
-                                    .font(.caption2)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 2)
-                                    .background(isSelected ? Color.green : Color.gray)
-                                    .cornerRadius(4)
-                                    .position(x: topLeft.x + 40, y: topLeft.y - 8)
-                            }
-                        }
-
-                        // Drag-in-progress box
-                        if let start = dragStart, let end = dragEnd {
-                            Rectangle()
-                                .stroke(Color.blue, lineWidth: 2)
-                                .background(Color.blue.opacity(0.1))
-                                .frame(
-                                    width: abs(end.x - start.x),
-                                    height: abs(end.y - start.y)
-                                )
-                                .position(
-                                    x: min(start.x, end.x) + abs(end.x - start.x) / 2,
-                                    y: min(start.y, end.y) + abs(end.y - start.y) / 2
-                                )
-                        }
-
-                        // Committed bounding box
-                        if let box = boundingBox {
+                    // Text detection bounding boxes
+                    if let result = textResult {
+                        ForEach(Array(result.detections.enumerated()), id: \.offset) { index, detection in
+                            let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
                             let topLeft = imageToView(
-                                CGPoint(x: CGFloat(box.x0), y: CGFloat(box.y0)),
+                                CGPoint(x: CGFloat(detection.box.x0), y: CGFloat(detection.box.y0)),
                                 viewSize: geometry.size
                             )
                             let bottomRight = imageToView(
-                                CGPoint(x: CGFloat(box.x1), y: CGFloat(box.y1)),
+                                CGPoint(x: CGFloat(detection.box.x1), y: CGFloat(detection.box.y1)),
                                 viewSize: geometry.size
                             )
+
                             Rectangle()
-                                .stroke(Color.blue, lineWidth: 2)
+                                .stroke(isSelected ? Color.green : Color.gray, lineWidth: isSelected ? 2 : 1)
                                 .frame(
                                     width: abs(bottomRight.x - topLeft.x),
                                     height: abs(bottomRight.y - topLeft.y)
@@ -204,53 +142,130 @@ struct UnifiedSegmentationView: View {
                                     x: topLeft.x + (bottomRight.x - topLeft.x) / 2,
                                     y: topLeft.y + (bottomRight.y - topLeft.y) / 2
                                 )
-                        }
+                                .onTapGesture { toggleTextSelection(index) }
 
-                        // Point markers
-                        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                                Circle()
-                                    .fill(point.label == .positive ? Color.green : Color.red)
-                                    .frame(width: 12, height: 12)
-                                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                                    .position(
-                                        imageToView(
-                                            CGPoint(x: point.x, y: point.y),
-                                            viewSize: geometry.size
-                                        )
-                                    )
-                        }
-
-                        // Processing indicator
-                        if isProcessing {
-                            Color.black.opacity(0.3)
-                            VStack(spacing: 8) {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .scaleEffect(1.5)
-                                if inputMode == .text {
-                                    Text("Detecting...")
-                                        .foregroundColor(.white)
-                                        .font(.caption)
-                                }
-                            }
-                        }
-
-                        // Model not ready overlay
-                        if !modelManager.isSamReady && inputMode != .text {
-                            Color.black.opacity(0.5)
-                            VStack {
-                                ProgressView()
-                                Text(modelManager.loadingStatus)
-                                    .foregroundColor(.white)
-                                    .font(.caption)
-                            }
+                            Text("\(detection.label) \(String(format: "%.0f%%", detection.confidence * 100))")
+                                .font(.caption2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 2)
+                                .background(isSelected ? Color.green : Color.gray)
+                                .cornerRadius(4)
+                                .position(x: topLeft.x + 40, y: topLeft.y - 8)
                         }
                     }
-                }
 
-                // Controls
-                controlsPanel
+                    // Drag-in-progress box
+                    if let start = dragStart, let end = dragEnd {
+                        Rectangle()
+                            .stroke(Color.blue, lineWidth: 2)
+                            .background(Color.blue.opacity(0.1))
+                            .frame(
+                                width: abs(end.x - start.x),
+                                height: abs(end.y - start.y)
+                            )
+                            .position(
+                                x: min(start.x, end.x) + abs(end.x - start.x) / 2,
+                                y: min(start.y, end.y) + abs(end.y - start.y) / 2
+                            )
+                    }
+
+                    // Committed bounding box
+                    if let box = boundingBox {
+                        let topLeft = imageToView(
+                            CGPoint(x: CGFloat(box.x0), y: CGFloat(box.y0)),
+                            viewSize: geometry.size
+                        )
+                        let bottomRight = imageToView(
+                            CGPoint(x: CGFloat(box.x1), y: CGFloat(box.y1)),
+                            viewSize: geometry.size
+                        )
+                        Rectangle()
+                            .stroke(Color.blue, lineWidth: 2)
+                            .frame(
+                                width: abs(bottomRight.x - topLeft.x),
+                                height: abs(bottomRight.y - topLeft.y)
+                            )
+                            .position(
+                                x: topLeft.x + (bottomRight.x - topLeft.x) / 2,
+                                y: topLeft.y + (bottomRight.y - topLeft.y) / 2
+                            )
+                    }
+
+                    // Point markers
+                    ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                            Circle()
+                                .fill(point.label == .positive ? Color.green : Color.red)
+                                .frame(width: 12, height: 12)
+                                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                                .position(
+                                    imageToView(
+                                        CGPoint(x: point.x, y: point.y),
+                                        viewSize: geometry.size
+                                    )
+                                )
+                    }
+
+                    // Processing indicator
+                    if isProcessing {
+                        Color.black.opacity(0.3)
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(1.5)
+                            Text("Processing...")
+                                .foregroundColor(.white)
+                                .font(.caption)
+                        }
+                    }
+
+                    // Model not ready overlay
+                    if !modelManager.isSamReady {
+                        Color.black.opacity(0.5)
+                        VStack {
+                            ProgressView()
+                            Text(modelManager.loadingStatus)
+                                .foregroundColor(.white)
+                                .font(.caption)
+                        }
+                    }
+
+                    // Floating toolbar (top-left)
+                    VStack {
+                        floatingToolbar
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+                    .padding(.leading, 8)
+
+                    // Error message (top, below toolbar)
+                    if let error = errorMessage {
+                        VStack {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.8)))
+                                .padding(.top, 56)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+                    }
+
+                    // Text field overlay (bottom)
+                    VStack {
+                        Spacer()
+                        textFieldOverlay
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                }
             }
+            .ignoresSafeArea(.keyboard)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -299,113 +314,123 @@ struct UnifiedSegmentationView: View {
         .animation(.easeInOut(duration: 0.2), value: toastMessage != nil)
     }
 
-    // MARK: - Controls Panel
+    // MARK: - Floating Toolbar
 
     @ViewBuilder
-    private var controlsPanel: some View {
-        VStack(spacing: 12) {
-            if let error = errorMessage {
-                Text(error)
-                    .font(.caption)
+    private var floatingToolbar: some View {
+        HStack(spacing: 6) {
+            // Point mode
+            Button {
+                toolMode = .point
+                showNegativePoints = false
+            } label: {
+                Image(systemName: "hand.point.up.left")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(toolMode == .point && !showNegativePoints ? .white : .primary)
+                    .frame(width: 36, height: 36)
+                    .background(toolMode == .point && !showNegativePoints ? Color.blue : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            // Negative point mode
+            Button {
+                toolMode = .point
+                showNegativePoints = true
+            } label: {
+                Image(systemName: "minus.circle")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(toolMode == .point && showNegativePoints ? .white : .primary)
+                    .frame(width: 36, height: 36)
+                    .background(toolMode == .point && showNegativePoints ? Color.red : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            // Box mode
+            Button {
+                toolMode = .box
+            } label: {
+                Image(systemName: "rectangle.dashed")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(toolMode == .box ? .white : .primary)
+                    .frame(width: 36, height: 36)
+                    .background(toolMode == .box ? Color.blue : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+
+            Divider().frame(height: 24)
+
+            // Clear all
+            Button {
+                clearAll()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.red)
-                    .lineLimit(3)
-            }
-
-            // Input mode picker
-            Picker("Input Mode", selection: $inputMode) {
-                ForEach(InputMode.allCases, id: \.self) { mode in
-                    Label(mode.rawValue, systemImage: mode.icon).tag(mode)
-                }
-            }
-            .pickerStyle(SegmentedPickerStyle())
-
-            pointBoxControls
-            textControls
-        }
-        .padding()
-    }
-
-    @ViewBuilder
-    private var pointBoxControls: some View {
-        HStack {
-            Button(action: clearAll) {
-                Label("Clear All", systemImage: "trash")
-                    .font(.caption)
+                    .frame(width: 36, height: 36)
             }
             .disabled(points.isEmpty && boundingBox == nil && samResult == nil && textResult == nil)
-
-            if inputMode == .point || inputMode == .both {
-                Divider().frame(height: 20)
-
-                Toggle(isOn: $showNegativePoints) {
-                    Label(
-                        showNegativePoints ? "Negative" : "Positive",
-                        systemImage: showNegativePoints ? "minus.circle" : "plus.circle"
-                    )
-                    .font(.caption)
-                }
-                .toggleStyle(.button)
-            }
-
-            Spacer()
-
-            Toggle("Show Mask", isOn: $showMask)
-                .disabled(samResult == nil && textResult == nil)
         }
-
-        if let result = samResult, result.masks.count > 1 {
-            VStack {
-                Text("Masks (\(result.masks.count))")
-                    .font(.caption)
-                let maskCount = min(result.masks.count, 3)
-                Picker("Mask", selection: $selectedMaskIndex) {
-                    ForEach(0..<maskCount, id: \.self) { index in
-                        Text("Mask \(index + 1) (\(String(format: "%.3f", result.scores[index])))")
-                            .tag(index)
-                    }
-                }
-                .pickerStyle(SegmentedPickerStyle())
-            }
-        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
     }
 
+    // MARK: - Text Field Overlay
+
     @ViewBuilder
-    private var textControls: some View {
-        // Detection summary
-        if let result = textResult, !result.detections.isEmpty {
-            Text("\(result.detections.count) object(s) found")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-
-        // Text input
-        HStack(spacing: 8) {
-            TextField("Type object name (e.g. dog, car)", text: $queryText)
-                .textFieldStyle(RoundedBorderTextFieldStyle())
-                .autocapitalization(.none)
-                .disableAutocorrection(true)
-                .submitLabel(.search)
-                .onSubmit { runTextDetection() }
-
-            Button(action: runTextDetection) {
-                Image(systemName: "magnifyingglass")
-                    .font(.body.bold())
+    private var textFieldOverlay: some View {
+        VStack(spacing: 4) {
+            if let result = textResult, !result.detections.isEmpty {
+                Text("\(result.detections.count) object(s) found")
+                    .font(.caption2)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.black.opacity(0.6)))
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(queryText.trimmingCharacters(in: .whitespaces).isEmpty || isProcessing)
-        }
 
-        if modelManager.textSession == nil {
-            Text("Text detection models not available")
-                .font(.caption)
-                .foregroundColor(.orange)
+            HStack(spacing: 8) {
+                TextField("Search for objects...", text: $queryText)
+                    .textFieldStyle(.plain)
+                    .font(.subheadline)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemBackground).opacity(0.9))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .focused($isTextFieldFocused)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .submitLabel(.search)
+                    .onSubmit { runTextDetection() }
+
+                Button(action: runTextDetection) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.body.bold())
+                        .frame(width: 36, height: 36)
+                        .background(Color.accentColor)
+                        .foregroundColor(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .disabled(queryText.trimmingCharacters(in: .whitespaces).isEmpty || isProcessing)
+            }
+
+            if modelManager.textSession == nil {
+                Text("Text detection not available")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.black.opacity(0.5)))
+            }
         }
     }
 
     // MARK: - Gestures
 
     private func handleTap(at location: CGPoint, geometry: GeometryProxy) {
-        guard inputMode == .point || inputMode == .both else { return }
+        guard toolMode == .point else { return }
         let imagePoint = viewToImage(location, viewSize: geometry.size)
         let point = SamPoint(
             x: imagePoint.x,
@@ -452,7 +477,6 @@ struct UnifiedSegmentationView: View {
 
         await MainActor.run {
             self.samResult = result
-            self.selectedMaskIndex = 0
             self.isProcessing = false
         }
     }
@@ -469,7 +493,6 @@ struct UnifiedSegmentationView: View {
 
         await MainActor.run {
             self.samResult = result
-            self.selectedMaskIndex = 0
             self.isProcessing = false
         }
     }
@@ -485,6 +508,7 @@ struct UnifiedSegmentationView: View {
         isProcessing = true
         errorMessage = nil
         selectedTextIndices.removeAll()
+        isTextFieldFocused = false
 
         Task {
             do {
@@ -514,7 +538,6 @@ struct UnifiedSegmentationView: View {
     // MARK: - Image Setup
 
     private func setImageOnSessions() async {
-        // Pre-cache image embeddings on available sessions
         if let session = modelManager.samSession, !samImageSet {
             do {
                 try session.setImage(image.cgImage!)
@@ -551,7 +574,6 @@ struct UnifiedSegmentationView: View {
         samResult = nil
         textResult = nil
         selectedTextIndices.removeAll()
-        selectedMaskIndex = 0
         errorMessage = nil
     }
 
@@ -575,7 +597,6 @@ struct UnifiedSegmentationView: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                // Checkerboard + extracted object
                 Image(uiImage: lifted)
                     .resizable()
                     .scaledToFit()
@@ -590,7 +611,6 @@ struct UnifiedSegmentationView: View {
 
                 Spacer()
 
-                // Action buttons
                 HStack(spacing: 40) {
                     Button { copyObject() } label: {
                         VStack(spacing: 6) {
@@ -626,16 +646,13 @@ struct UnifiedSegmentationView: View {
     private func handleLiftObject() {
         guard let cgImage = image.cgImage else { return }
 
-        // Get current mask
         let mask: SamMask?
-        if let result = samResult {
-            let idx = min(selectedMaskIndex, result.masks.count - 1)
-            mask = idx >= 0 ? result.masks[idx] : nil
+        if let result = samResult, !result.masks.isEmpty {
+            mask = result.masks.first
         } else if let result = textResult, !result.masks.isEmpty {
             let indices = selectedTextIndices.isEmpty
                 ? Set(0..<result.masks.count)
                 : selectedTextIndices
-            // Use the first selected text mask
             if let first = indices.sorted().first, first < result.masks.count {
                 mask = result.masks[first]
             } else {
