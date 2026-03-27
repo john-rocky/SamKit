@@ -118,14 +118,30 @@ public final class SamSession {
         let decoderInput: MLDictionaryFeatureProvider
 
         if let promptEnc = promptEncoder {
-            let (sparseEmb, denseEmb) = try promptEnc.encode(points: points, transform: transform)
+            let (sparseEmb, denseEmb) = try promptEnc.encode(points: points, box: box, transform: transform)
             decoderInput = try MLDictionaryFeatureProvider(dictionary: [
                 "image_embeddings": embedding,
                 "sparse_embeddings": sparseEmb,
                 "dense_embeddings": denseEmb,
             ])
         } else {
-            let (pointCoords, pointLabels) = try preprocessor.encodePoints(points, transform: transform)
+            // Build combined points: user points + box corners (as label 2, 3)
+            var allPoints = points
+            if let box = box {
+                allPoints.append(SamPoint(x: CGFloat(box.x0), y: CGFloat(box.y0), label: .positive))
+                allPoints.append(SamPoint(x: CGFloat(box.x1), y: CGFloat(box.y1), label: .positive))
+            }
+
+            let (pointCoords, pointLabels) = try preprocessor.encodePoints(allPoints, transform: transform)
+
+            // Override labels for box corners to SAM convention (2 = top-left, 3 = bottom-right)
+            if box != nil {
+                let labelsPtr = pointLabels.dataPointer.bindMemory(to: Float32.self, capacity: pointLabels.count)
+                let boxStart = allPoints.count - 2
+                labelsPtr[boxStart] = 2.0
+                labelsPtr[boxStart + 1] = 3.0
+            }
+
             var inputs: [String: Any] = [
                 "image_embeddings": embedding,
                 "point_coords": pointCoords,

@@ -67,23 +67,28 @@ public final class PromptEncoder {
 
     // MARK: - Public API
 
-    /// Encode point prompts into sparse embeddings and produce dense (no-mask) embeddings.
+    /// Encode point and box prompts into sparse embeddings and produce dense (no-mask) embeddings.
     /// - Returns: (sparse_embeddings [1, N, embedDim], dense_embeddings [1, embedDim, H, W])
     public func encode(
         points: [SamPoint],
+        box: SamBox? = nil,
         transform: TransformParams
     ) throws -> (MLMultiArray, MLMultiArray) {
 
         // Transform points to model coordinates and add padding token
         // Limit to maxPoints to stay within CoreML enumerated shapes
-        let clampedPoints = points.count > Self.maxPoints
-            ? Array(points.suffix(Self.maxPoints))
+        // Reserve 2 token slots for box corners when a box is provided
+        let boxSlots = (box != nil) ? 2 : 0
+        let maxUserPoints = Self.maxPoints - boxSlots
+        let clampedPoints = points.count > maxUserPoints
+            ? Array(points.suffix(maxUserPoints))
             : points
 
         var coords: [(Float, Float)] = []
         var labels: [Float] = []
 
-        if clampedPoints.isEmpty {
+        if clampedPoints.isEmpty && box == nil {
+            // No prompts at all: add dummy center point
             coords.append((Float(inputImageSize.w / 2), Float(inputImageSize.h / 2)))
             labels.append(-1)
         } else {
@@ -92,6 +97,20 @@ public final class PromptEncoder {
                 coords.append((Float(mp.x), Float(mp.y)))
                 labels.append(Float(p.label.rawValue))
             }
+        }
+
+        // Add box corner tokens (SAM convention: label 2 = top-left, label 3 = bottom-right)
+        if let box = box {
+            let topLeft = SamPoint(x: CGFloat(box.x0), y: CGFloat(box.y0), label: .positive)
+            let bottomRight = SamPoint(x: CGFloat(box.x1), y: CGFloat(box.y1), label: .positive)
+            let tlModel = transform.toModel(topLeft)
+            let brModel = transform.toModel(bottomRight)
+
+            coords.append((Float(tlModel.x), Float(tlModel.y)))
+            labels.append(2)  // box top-left
+
+            coords.append((Float(brModel.x), Float(brModel.y)))
+            labels.append(3)  // box bottom-right
         }
 
         // Add padding point (SAM always pads with one extra point)
@@ -128,10 +147,20 @@ public final class PromptEncoder {
                 for d in 0..<embedDim {
                     sparse[offset + d] += pointEmbeddings[0][d]
                 }
-            } else {
+            } else if label == 1 {
                 // Positive point
                 for d in 0..<embedDim {
                     sparse[offset + d] += pointEmbeddings[1][d]
+                }
+            } else if label == 2 {
+                // Box top-left corner
+                for d in 0..<embedDim {
+                    sparse[offset + d] += pointEmbeddings[2][d]
+                }
+            } else if label == 3 {
+                // Box bottom-right corner
+                for d in 0..<embedDim {
+                    sparse[offset + d] += pointEmbeddings[3][d]
                 }
             }
         }
