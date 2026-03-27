@@ -394,29 +394,16 @@ public struct Sam2ModelRef {
 
 public enum Sam2ModelType {
     case tiny
-    case small
-    case base
-    case large
-    
+
     public var modelPrefix: String {
-        switch self {
-        case .tiny: return "SAM2Tiny"
-        case .small: return "SAM2Small"
-        case .base: return "SAM2Base"
-        case .large: return "SAM2Large"
-        }
+        return "SAM2Tiny"
     }
-    
+
     public var inputSize: Int {
-        return 1024  // All SAM2 models use 1024x1024 input
+        return 1024
     }
-    
+
     public var displayName: String {
-        switch self {
-        case .tiny: return "SAM 2 Tiny"
-        case .small: return "SAM 2 Small"
-        case .base: return "SAM 2 Base"
-        case .large: return "SAM 2 Large"
-        }
+        return "SAM 2 Tiny"
     }
 }

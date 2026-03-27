@@ -19,7 +19,6 @@ final class ModelManager: ObservableObject {
 
     @Published var selectedModelType: ModelType = .mobileSam
     @Published var useSam2 = false
-    @Published var selectedSam2Model: Sam2ModelType = .tiny
 
     // MARK: - Model Loading
 
@@ -54,10 +53,9 @@ final class ModelManager: ObservableObject {
         }
     }
 
-    /// Reload SAM session when the user changes model type.
-    func switchSamModel(to type: ModelType) {
-        guard type != selectedModelType || samSession == nil else { return }
-        selectedModelType = type
+    /// Switch to MobileSAM.
+    func switchSamModel() {
+        guard useSam2 || samSession == nil else { return }
         useSam2 = false
 
         samSession = nil
@@ -65,7 +63,7 @@ final class ModelManager: ObservableObject {
 
         Task {
             do {
-                let session = try await Self.createSamSession(modelType: type)
+                let session = try await Self.createSamSession(modelType: .mobileSam)
                 self.samSession = session
             } catch {
                 print("[ModelManager] SAM model switch failed: \(error)")
@@ -74,18 +72,16 @@ final class ModelManager: ObservableObject {
         }
     }
 
-    /// Switch to a HuggingFace SAM2 model.
-    func switchToSam2(type: Sam2ModelType) {
-        guard type != selectedSam2Model || sam2Session == nil || !useSam2 else { return }
-        selectedSam2Model = type
+    /// Switch to SAM2 Tiny.
+    func switchToSam2() {
+        guard !useSam2 || sam2Session == nil else { return }
         useSam2 = true
 
         sam2Session = nil
 
-        let prefix = type.modelPrefix
         Task {
             do {
-                let session = try await Self.createSam2Session(modelPrefix: prefix)
+                let session = try await Self.createSam2Session(modelPrefix: "SAM2Tiny")
                 self.sam2Session = session
             } catch {
                 print("[ModelManager] SAM2 model switch failed: \(error)")
@@ -105,9 +101,9 @@ final class ModelManager: ObservableObject {
     /// Display name for the currently active model.
     var activeModelName: String {
         if useSam2 {
-            return selectedSam2Model.displayName + " (HF)"
+            return "SAM2 Tiny"
         }
-        return selectedModelType.displayName
+        return "MobileSAM"
     }
 
     // MARK: - Factory helpers (nonisolated to run off main actor)

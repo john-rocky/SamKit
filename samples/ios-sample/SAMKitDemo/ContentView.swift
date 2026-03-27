@@ -66,40 +66,16 @@ struct ContentView: View {
                         .font(.headline)
                         .foregroundColor(.secondary)
 
-                    VStack(spacing: 8) {
-                        Toggle("Use HuggingFace SAM2 Models", isOn: $modelManager.useSam2)
-                            .toggleStyle(SwitchToggleStyle())
-                            .onChange(of: modelManager.useSam2) { useSam2 in
-                                if useSam2 {
-                                    modelManager.switchToSam2(type: modelManager.selectedSam2Model)
-                                } else {
-                                    modelManager.switchSamModel(to: modelManager.selectedModelType)
-                                }
-                            }
-
-                        if modelManager.useSam2 {
-                            Picker("SAM2 Model", selection: $modelManager.selectedSam2Model) {
-                                Text("SAM2 Tiny (HF)").tag(Sam2ModelType.tiny)
-                                Text("SAM2 Small (HF)").tag(Sam2ModelType.small)
-                                Text("SAM2 Base (HF)").tag(Sam2ModelType.base)
-                                Text("SAM2 Large (HF)").tag(Sam2ModelType.large)
-                            }
-                            .pickerStyle(MenuPickerStyle())
-                            .background(Color(.systemGray6))
-                            .cornerRadius(8)
-                            .onChange(of: modelManager.selectedSam2Model) { type in
-                                modelManager.switchToSam2(type: type)
-                            }
+                    Picker("Model", selection: $modelManager.useSam2) {
+                        Text("MobileSAM").tag(false)
+                        Text("SAM2 Tiny").tag(true)
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+                    .onChange(of: modelManager.useSam2) { useSam2 in
+                        if useSam2 {
+                            modelManager.switchToSam2()
                         } else {
-                            Picker("Model", selection: $modelManager.selectedModelType) {
-                                Text("MobileSAM (Fast)").tag(ModelType.mobileSam)
-                                Text("SAM 2.1 Base").tag(ModelType.sam2_1_base)
-                                Text("SAM 2.1 Large").tag(ModelType.sam2_1_large)
-                            }
-                            .pickerStyle(SegmentedPickerStyle())
-                            .onChange(of: modelManager.selectedModelType) { type in
-                                modelManager.switchSamModel(to: type)
-                            }
+                            modelManager.switchSamModel()
                         }
                     }
                 }
@@ -221,20 +197,7 @@ struct ImagePicker: UIViewControllerRepresentable {
 
 extension ModelType {
     var displayName: String {
-        switch self {
-        case .mobileSam:
-            return "MobileSAM"
-        case .sam2_1_tiny:
-            return "SAM 2.1 Tiny"
-        case .sam2_1_small:
-            return "SAM 2.1 Small"
-        case .sam2_1_base:
-            return "SAM 2.1 Base"
-        case .sam2_1_large:
-            return "SAM 2.1 Large"
-        case .sam2_1_basePlus:
-            return "SAM 2.1 Base+"
-        }
+        return "MobileSAM"
     }
 }
 
