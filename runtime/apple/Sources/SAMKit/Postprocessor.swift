@@ -666,6 +666,66 @@ extension SamMask {
 
         return context.makeImage()
     }
+
+    /// Extract the object from the source image using multiple masks combined (OR union).
+    /// Any pixel covered by at least one mask will be included.
+    public static func extractObject(from sourceImage: CGImage, masks: [SamMask]) -> CGImage? {
+        guard let first = masks.first else { return nil }
+        if masks.count == 1 { return first.extractObject(from: sourceImage) }
+
+        let w = first.width
+        let h = first.height
+        var combined = Data(count: w * h)
+        combined.withUnsafeMutableBytes { dst in
+            let dstPtr = dst.bindMemory(to: UInt8.self).baseAddress!
+            for mask in masks {
+                mask.alpha.withUnsafeBytes { src in
+                    let srcPtr = src.bindMemory(to: UInt8.self).baseAddress!
+                    let count = min(w * h, mask.alpha.count)
+                    for i in 0..<count {
+                        dstPtr[i] = max(dstPtr[i], srcPtr[i])
+                    }
+                }
+            }
+        }
+
+        let origWidth = sourceImage.width
+        let origHeight = sourceImage.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+
+        guard let context = CGContext(
+            data: nil,
+            width: origWidth,
+            height: origHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: origWidth * 4,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo.rawValue
+        ) else { return nil }
+
+        let maskColorSpace = CGColorSpaceCreateDeviceGray()
+        guard let maskProvider = CGDataProvider(data: combined as CFData),
+              let maskCGImage = CGImage(
+                width: w,
+                height: h,
+                bitsPerComponent: 8,
+                bitsPerPixel: 8,
+                bytesPerRow: w,
+                space: maskColorSpace,
+                bitmapInfo: CGBitmapInfo(rawValue: 0),
+                provider: maskProvider,
+                decode: nil,
+                shouldInterpolate: true,
+                intent: .defaultIntent
+              ) else { return nil }
+
+        let rect = CGRect(x: 0, y: 0, width: origWidth, height: origHeight)
+        context.clip(to: rect, mask: maskCGImage)
+        context.draw(sourceImage, in: rect)
+
+        return context.makeImage()
+    }
 }
 
 // MARK: - Extensions for Mask Visualization

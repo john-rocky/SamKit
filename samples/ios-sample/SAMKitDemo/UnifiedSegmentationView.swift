@@ -646,24 +646,20 @@ struct UnifiedSegmentationView: View {
     private func handleLiftObject() {
         guard let cgImage = image.cgImage else { return }
 
-        let mask: SamMask?
+        let visibleMasks: [SamMask]
         if let result = samResult, !result.masks.isEmpty {
-            mask = result.masks.first
+            visibleMasks = [result.masks[0]]
         } else if let result = textResult, !result.masks.isEmpty {
             let indices = selectedTextIndices.isEmpty
                 ? Set(0..<result.masks.count)
                 : selectedTextIndices
-            if let first = indices.sorted().first, first < result.masks.count {
-                mask = result.masks[first]
-            } else {
-                mask = nil
-            }
+            visibleMasks = indices.sorted().compactMap { $0 < result.masks.count ? result.masks[$0] : nil }
         } else {
-            mask = nil
+            visibleMasks = []
         }
 
-        guard let mask = mask,
-              let extracted = mask.extractObject(from: cgImage) else { return }
+        guard !visibleMasks.isEmpty,
+              let extracted = SamMask.extractObject(from: cgImage, masks: visibleMasks) else { return }
 
         liftedImage = UIImage(cgImage: extracted)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
