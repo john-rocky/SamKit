@@ -119,42 +119,6 @@ struct UnifiedSegmentationView: View {
                         }
                     }
 
-                    // Text detection bounding boxes
-                    if let result = textResult {
-                        ForEach(Array(result.detections.enumerated()), id: \.offset) { index, detection in
-                            let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
-                            let topLeft = imageToView(
-                                CGPoint(x: CGFloat(detection.box.x0), y: CGFloat(detection.box.y0)),
-                                viewSize: geometry.size
-                            )
-                            let bottomRight = imageToView(
-                                CGPoint(x: CGFloat(detection.box.x1), y: CGFloat(detection.box.y1)),
-                                viewSize: geometry.size
-                            )
-
-                            Rectangle()
-                                .stroke(isSelected ? Color.green : Color.gray, lineWidth: isSelected ? 2 : 1)
-                                .frame(
-                                    width: abs(bottomRight.x - topLeft.x),
-                                    height: abs(bottomRight.y - topLeft.y)
-                                )
-                                .position(
-                                    x: topLeft.x + (bottomRight.x - topLeft.x) / 2,
-                                    y: topLeft.y + (bottomRight.y - topLeft.y) / 2
-                                )
-                                .onTapGesture { toggleTextSelection(index) }
-
-                            Text("\(detection.label) \(String(format: "%.0f%%", detection.confidence * 100))")
-                                .font(.caption2)
-                                .fontWeight(.semibold)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 2)
-                                .background(isSelected ? Color.green : Color.gray)
-                                .cornerRadius(4)
-                                .position(x: topLeft.x + 40, y: topLeft.y - 8)
-                        }
-                    }
 
                     // Drag-in-progress box
                     if let start = dragStart, let end = dragEnd {
