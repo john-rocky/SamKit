@@ -229,7 +229,6 @@ struct UnifiedSegmentationView: View {
                     .padding(.bottom, 8)
                 }
             }
-            .ignoresSafeArea(.keyboard)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -347,7 +346,7 @@ struct UnifiedSegmentationView: View {
     private var textFieldOverlay: some View {
         VStack(spacing: 4) {
             if let result = textResult, !result.detections.isEmpty {
-                Text("\(result.detections.count) object(s) found")
+                Text("\"\(queryText)\" — \(result.detections.count) object(s) found")
                     .font(.caption2)
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
