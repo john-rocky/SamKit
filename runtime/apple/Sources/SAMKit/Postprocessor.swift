@@ -31,14 +31,18 @@ public final class Postprocessor {
         }
 
         // Debug: print mask shape
-        print("Mask logits shape: \(maskLogits.shape)")
-        print("IOU predictions shape: \(iouPredictions.shape)")
+        print("Mask logits shape: \(maskLogits.shape), dataType: \(maskLogits.dataType)")
+        print("IOU predictions shape: \(iouPredictions.shape), dataType: \(iouPredictions.dataType)")
         print("IOU predictions count: \(iouPredictions.count)")
         print("Transform: scale=\(transform.scale), padX=\(transform.padX), padY=\(transform.padY)")
         print("Original size: \(transform.originalWidth)x\(transform.originalHeight)")
 
+        // Convert FP16 arrays to Float32 if needed (CoreML FP16 models may output Float16)
+        let maskLogits32 = try ensureFloat32(maskLogits)
+        let iouPredictions32 = try ensureFloat32(iouPredictions)
+
         // Check if mask is already at model resolution (1024x1024) or low resolution (256x256)
-        let maskHeight = maskLogits.shape[2].intValue
+        let maskHeight = maskLogits32.shape[2].intValue
         let isLowRes = maskHeight <= 256
         
         let pp0 = CFAbsoluteTimeGetCurrent()
@@ -48,10 +52,10 @@ public final class Postprocessor {
         // and extremely expensive for large images (e.g. 4000x3000 = 12M pixels x 3 masks).
         let processedMasks: MLMultiArray
         if isLowRes {
-            let upsampled = try upsampleMasks(maskLogits)
+            let upsampled = try upsampleMasks(maskLogits32)
             processedMasks = try removePadding(upsampled, transform: transform)
         } else {
-            processedMasks = try removePadding(maskLogits, transform: transform)
+            processedMasks = try removePadding(maskLogits32, transform: transform)
         }
 
         let pp4 = CFAbsoluteTimeGetCurrent()
@@ -59,7 +63,7 @@ public final class Postprocessor {
         // 4. Extract individual masks with scores
         let masks = try extractMasks(
             processedMasks,
-            scores: iouPredictions,
+            scores: iouPredictions32,
             options: options
         )
 
@@ -72,6 +76,40 @@ public final class Postprocessor {
     
     // MARK: - Private Methods
     
+    /// Convert MLMultiArray to Float32 if it is Float16 (FP16 CoreML models output Float16)
+    private func ensureFloat32(_ array: MLMultiArray) throws -> MLMultiArray {
+        // float16 dataType requires iOS 16+; on older OS the model always outputs float32
+        if #available(iOS 16.0, macOS 13.0, *) {
+            guard array.dataType == .float16 else { return array }
+        } else {
+            return array
+        }
+
+        let shape = array.shape
+        let result = try MLMultiArray(shape: shape, dataType: .float32)
+        let count = array.count
+
+        let srcPtr = array.dataPointer.bindMemory(to: UInt16.self, capacity: count)
+        let dstPtr = result.dataPointer.bindMemory(to: Float32.self, capacity: count)
+
+        var srcBuffer = vImage_Buffer(
+            data: UnsafeMutableRawPointer(mutating: srcPtr),
+            height: 1,
+            width: vImagePixelCount(count),
+            rowBytes: count * MemoryLayout<UInt16>.size
+        )
+        var dstBuffer = vImage_Buffer(
+            data: UnsafeMutableRawPointer(dstPtr),
+            height: 1,
+            width: vImagePixelCount(count),
+            rowBytes: count * MemoryLayout<Float32>.size
+        )
+        vImageConvert_Planar16FtoPlanarF(&srcBuffer, &dstBuffer, vImage_Flags(kvImageNoFlags))
+
+        print("Converted MLMultiArray from Float16 to Float32 (\(count) elements)")
+        return result
+    }
+
     private func upsampleMasks(_ masks: MLMultiArray) throws -> MLMultiArray {
         // HuggingFace SAM2 outputs shape [batch, num_masks, H, W]
         // Standard SAM outputs shape [num_masks, 1, H, W]

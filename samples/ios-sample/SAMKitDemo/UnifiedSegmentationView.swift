@@ -489,7 +489,7 @@ struct UnifiedSegmentationView: View {
             await MainActor.run { sam2ImageSet = true }
         }
 
-        let result = try await session.predict(points: points, box: boundingBox)
+        let result = try session.predict(points: points, box: boundingBox)
 
         await MainActor.run {
             self.samResult = result

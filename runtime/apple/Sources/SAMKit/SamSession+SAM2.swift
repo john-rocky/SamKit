@@ -47,8 +47,10 @@ public final class Sam2Session {
         self.maskDecoder = try MLModel(contentsOf: maskDecoderURL, configuration: mlConfig)
         
         // Initialize processors
+        // Note: isHuggingFaceModel must be false — SAM2 outputs [1,3,256,256] as 3 separate masks,
+        // NOT the 2x2 grid layout that isHuggingFaceModel triggers
         self.preprocessor = Preprocessor(modelSize: modelSize)
-        self.postprocessor = Postprocessor(modelSize: modelSize)
+        self.postprocessor = Postprocessor(modelSize: modelSize, isHuggingFaceModel: false)
     }
     
     /// Convenience initializer for HuggingFace models
@@ -74,47 +76,40 @@ public final class Sam2Session {
     
     /// Set the image for segmentation
     public func setImage(_ image: CGImage) throws {
+        let t0 = CFAbsoluteTimeGetCurrent()
+
         // Clear previous cache
         cachedEmbedding = nil
         cachedEncoderOutputs = nil
         transformParams = nil
-        
+
         // Preprocess image for SAM2 (returns CGImage)
         let (processedImage, transform) = try preprocessor.processForSAM2(image)
         self.transformParams = transform
-        
+
         // Convert CGImage to MLFeatureValue
         let imageFeature = try preprocessor.createImageFeature(processedImage)
-        
-        // Run image encoder with performance monitoring
+
+        let t1 = CFAbsoluteTimeGetCurrent()
+
+        // Run image encoder
         let encoderInput = try MLDictionaryFeatureProvider(dictionary: [
             "image": imageFeature
         ])
-        
-        #if DEBUG
-        let encoderStartTime = CFAbsoluteTimeGetCurrent()
-        #endif
-        
+
         let encoderOutput = try imageEncoder.prediction(from: encoderInput)
-        
-        #if DEBUG
-        let encoderTime = CFAbsoluteTimeGetCurrent() - encoderStartTime
-        print("Image encoder inference time: \(String(format: "%.3f", encoderTime))s")
-        #endif
-        
+
+        let t2 = CFAbsoluteTimeGetCurrent()
+
         // Cache all encoder outputs - HuggingFace SAM2 needs multiple features
         var allEncoderOutputs: [String: MLMultiArray] = [:]
-        
-        // Extract all features from encoder
+
         for featureName in encoderOutput.featureNames {
             if let featureValue = encoderOutput.featureValue(for: featureName)?.multiArrayValue {
                 allEncoderOutputs[featureName] = featureValue
             }
         }
-        
-        // Debug: print all encoder outputs
-        print("Encoder outputs: \(allEncoderOutputs.keys.joined(separator: ", "))")
-        
+
         // Find the main embedding
         let embedding: MLMultiArray?
         if let emb = allEncoderOutputs["image_embedding"] {
@@ -122,18 +117,17 @@ public final class Sam2Session {
         } else if let emb = allEncoderOutputs["image_embeddings"] {
             embedding = emb
         } else {
-            // Use the first available embedding
             embedding = allEncoderOutputs.values.first
         }
-        
+
         guard let finalEmbedding = embedding else {
             throw SamError.invalidModelOutput("Could not extract image embeddings")
         }
-        
+
         self.cachedEmbedding = finalEmbedding
-        
-        // Store all encoder outputs for later use
         self.cachedEncoderOutputs = allEncoderOutputs
+
+        print("[SAM2] setImage: preprocess=\(Int((t1-t0)*1000))ms encoder=\(Int((t2-t1)*1000))ms")
     }
     
     /// Run mask prediction with prompts
@@ -142,14 +136,16 @@ public final class Sam2Session {
         box: SamBox? = nil,
         maskInput: SamMaskRef? = nil,
         options: SamOptions = SamOptions()
-    ) async throws -> SamResult {
-        
-        guard let embedding = cachedEmbedding,
+    ) throws -> SamResult {
+
+        let t0 = CFAbsoluteTimeGetCurrent()
+
+        guard let _ = cachedEmbedding,
               let encoderOutputs = cachedEncoderOutputs,
               let transform = transformParams else {
             throw SamError.imageNotSet
         }
-        
+
         // Encode prompts using the separate PromptEncoder
         let promptEmbeddings = try encodePrompts(
             points: points,
@@ -157,99 +153,48 @@ public final class Sam2Session {
             maskInput: maskInput,
             transform: transform
         )
-        
+
+        let t1 = CFAbsoluteTimeGetCurrent()
+
         // Prepare mask decoder inputs
         var decoderInputs: [String: Any] = [:]
-        
+
         // Add all encoder outputs (includes feats_s0, feats_s1, image_embedding)
         for (key, value) in encoderOutputs {
             decoderInputs[key] = value
         }
-        
-        // Also provide alternative naming conventions
-        decoderInputs["image_embedding"] = embedding
-        decoderInputs["image_embeddings"] = embedding
-        
-        // Add prompt embeddings
+
+        // Add prompt embeddings (provide both singular/plural keys for model compatibility)
         if let sparseEmbeddings = promptEmbeddings["sparse_embeddings"] {
             decoderInputs["sparse_embeddings"] = sparseEmbeddings
-            decoderInputs["sparse_embedding"] = sparseEmbeddings  // Also try singular
+            decoderInputs["sparse_embedding"] = sparseEmbeddings
         }
         if let denseEmbeddings = promptEmbeddings["dense_embeddings"] {
             decoderInputs["dense_embeddings"] = denseEmbeddings
-            decoderInputs["dense_embedding"] = denseEmbeddings  // Also try singular
+            decoderInputs["dense_embedding"] = denseEmbeddings
         }
-        
-        // Debug: print decoder inputs
-        print("Decoder inputs: \(decoderInputs.keys.joined(separator: ", "))")
-        
-        // Run mask decoder with performance optimization
+
+        // Run mask decoder directly (no Task.detached overhead)
         let decoderInput = try MLDictionaryFeatureProvider(dictionary: decoderInputs)
-        
-        // Add performance timing in debug mode
-        #if DEBUG
-        let startTime = CFAbsoluteTimeGetCurrent()
-        #endif
-        
-        let decoderOutput = try await withCheckedThrowingContinuation { continuation in
-            Task.detached(priority: .high) {
-                do {
-                    let output = try self.maskDecoder.prediction(from: decoderInput)
-                    continuation.resume(returning: output)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-        
-        #if DEBUG
-        let decoderTime = CFAbsoluteTimeGetCurrent() - startTime
-        print("Mask decoder inference time: \(String(format: "%.3f", decoderTime))s")
-        #endif
-        
-        // Extract masks and scores - try different possible output keys
-        let maskLogits: MLMultiArray?
-        let iouPredictions: MLMultiArray?
-        
-        // Try common output keys for masks
-        if let masks = decoderOutput.featureValue(for: "masks")?.multiArrayValue {
-            maskLogits = masks
-        } else if let masks = decoderOutput.featureValue(for: "low_res_masks")?.multiArrayValue {
-            maskLogits = masks
-        } else if let masks = decoderOutput.featureValue(for: "output_0")?.multiArrayValue {
-            maskLogits = masks
-        } else if let masks = decoderOutput.featureValue(for: "var_7056")?.multiArrayValue {
-            // Some HuggingFace models use auto-generated names
-            maskLogits = masks
-        } else {
-            maskLogits = nil
-        }
-        
-        // Try common output keys for scores
-        if let scores = decoderOutput.featureValue(for: "iou_predictions")?.multiArrayValue {
-            iouPredictions = scores
-        } else if let scores = decoderOutput.featureValue(for: "scores")?.multiArrayValue {
-            iouPredictions = scores
-        } else if let scores = decoderOutput.featureValue(for: "output_1")?.multiArrayValue {
-            iouPredictions = scores
-        } else if let scores = decoderOutput.featureValue(for: "var_7057")?.multiArrayValue {
-            // Some HuggingFace models use auto-generated names
-            iouPredictions = scores
-        } else {
-            iouPredictions = nil
-        }
-        
+        let decoderOutput = try maskDecoder.prediction(from: decoderInput)
+
+        let t2 = CFAbsoluteTimeGetCurrent()
+
+        // Extract masks and scores
+        let maskLogits = decoderOutput.featureValue(for: "masks")?.multiArrayValue
+            ?? decoderOutput.featureValue(for: "low_res_masks")?.multiArrayValue
+            ?? decoderOutput.featureValue(for: "output_0")?.multiArrayValue
+
+        let iouPredictions = decoderOutput.featureValue(for: "iou_predictions")?.multiArrayValue
+            ?? decoderOutput.featureValue(for: "scores")?.multiArrayValue
+            ?? decoderOutput.featureValue(for: "output_1")?.multiArrayValue
+
         guard let finalMaskLogits = maskLogits,
               let finalIouPredictions = iouPredictions else {
             let keys = decoderOutput.featureNames.joined(separator: ", ")
             throw SamError.invalidModelOutput("Missing masks or iou_predictions from decoder. Available keys: \(keys)")
         }
-        
-        // Debug: print mask decoder output shapes
-        print("Mask decoder output shapes:")
-        print("  Mask logits: \(finalMaskLogits.shape)")
-        print("  IOU predictions: \(finalIouPredictions.shape)")
-        
+
         // Postprocess results
         let result = try postprocessor.process(
             maskLogits: finalMaskLogits,
@@ -257,7 +202,10 @@ public final class Sam2Session {
             transform: transform,
             options: options
         )
-        
+
+        let t3 = CFAbsoluteTimeGetCurrent()
+        print("[SAM2] prompt=\(Int((t1-t0)*1000))ms decoder=\(Int((t2-t1)*1000))ms postprocess=\(Int((t3-t2)*1000))ms total=\(Int((t3-t0)*1000))ms")
+
         return result
     }
     
