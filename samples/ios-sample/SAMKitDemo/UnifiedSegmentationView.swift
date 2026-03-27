@@ -240,6 +240,32 @@ struct UnifiedSegmentationView: View {
                         .font(.headline)
                 }
             }
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 8) {
+                    TextField("Search for objects...", text: $queryText)
+                        .textFieldStyle(.plain)
+                        .font(.subheadline)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.systemBackground).opacity(0.9))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .focused($isTextFieldFocused)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .submitLabel(.search)
+                        .onSubmit { runTextDetection() }
+                    
+                    Button(action: runTextDetection) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.body.bold())
+                            .frame(width: 36, height: 36)
+                            .background(Color.accentColor)
+                            .foregroundColor(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                    .disabled(queryText.trimmingCharacters(in: .whitespaces).isEmpty || isProcessing)
+                }
+            }
         }
         .task { await setImageOnSessions() }
         .overlay {
@@ -353,31 +379,6 @@ struct UnifiedSegmentationView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.black.opacity(0.6)))
-            }
-
-            HStack(spacing: 8) {
-                TextField("Search for objects...", text: $queryText)
-                    .textFieldStyle(.plain)
-                    .font(.subheadline)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemBackground).opacity(0.9))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .focused($isTextFieldFocused)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-                    .submitLabel(.search)
-                    .onSubmit { runTextDetection() }
-
-                Button(action: runTextDetection) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.body.bold())
-                        .frame(width: 36, height: 36)
-                        .background(Color.accentColor)
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .disabled(queryText.trimmingCharacters(in: .whitespaces).isEmpty || isProcessing)
             }
 
             if modelManager.textSession == nil {
