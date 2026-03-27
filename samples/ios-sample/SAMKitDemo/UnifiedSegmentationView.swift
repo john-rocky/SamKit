@@ -93,8 +93,8 @@ struct UnifiedSegmentationView: View {
                                 handleTap(at: location, geometry: geometry)
                             }
 
-                        // SAM mask overlay (point/box modes)
-                        if inputMode != .text, showMask, let result = samResult {
+                        // SAM mask overlay (point/box)
+                        if showMask, let result = samResult {
                             let safeIndex = min(selectedMaskIndex, result.masks.count - 1)
                             if safeIndex >= 0 && safeIndex < result.masks.count {
                                 Image(uiImage: UIImage(cgImage: result.masks[safeIndex].cgImage))
@@ -107,7 +107,7 @@ struct UnifiedSegmentationView: View {
                         }
 
                         // Text mask overlays
-                        if inputMode == .text, showMask, let result = textResult {
+                        if showMask, let result = textResult {
                             ForEach(Array(result.masks.enumerated()), id: \.offset) { index, mask in
                                 let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
                                 if isSelected {
@@ -122,7 +122,7 @@ struct UnifiedSegmentationView: View {
                         }
 
                         // Text detection bounding boxes
-                        if inputMode == .text, let result = textResult {
+                        if let result = textResult {
                             ForEach(Array(result.detections.enumerated()), id: \.offset) { index, detection in
                                 let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
                                 let topLeft = imageToView(
@@ -174,7 +174,7 @@ struct UnifiedSegmentationView: View {
                         }
 
                         // Committed bounding box
-                        if inputMode != .text, let box = boundingBox {
+                        if let box = boundingBox {
                             let topLeft = imageToView(
                                 CGPoint(x: CGFloat(box.x0), y: CGFloat(box.y0)),
                                 viewSize: geometry.size
@@ -196,8 +196,7 @@ struct UnifiedSegmentationView: View {
                         }
 
                         // Point markers
-                        if inputMode != .text {
-                            ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
                                 Circle()
                                     .fill(point.label == .positive ? Color.green : Color.red)
                                     .frame(width: 12, height: 12)
@@ -208,7 +207,6 @@ struct UnifiedSegmentationView: View {
                                             viewSize: geometry.size
                                         )
                                     )
-                            }
                         }
 
                         // Processing indicator
@@ -254,7 +252,6 @@ struct UnifiedSegmentationView: View {
             }
         }
         .task { await setImageOnSessions() }
-        .onChange(of: inputMode) { _ in clearModeResults() }
     }
 
     // MARK: - Controls Panel
@@ -277,11 +274,8 @@ struct UnifiedSegmentationView: View {
             }
             .pickerStyle(SegmentedPickerStyle())
 
-            if inputMode == .text {
-                textControls
-            } else {
-                pointBoxControls
-            }
+            pointBoxControls
+            textControls
         }
         .padding()
     }
@@ -293,7 +287,7 @@ struct UnifiedSegmentationView: View {
                 Label("Clear All", systemImage: "trash")
                     .font(.caption)
             }
-            .disabled(points.isEmpty && boundingBox == nil)
+            .disabled(points.isEmpty && boundingBox == nil && samResult == nil && textResult == nil)
 
             if inputMode == .point || inputMode == .both {
                 Divider().frame(height: 20)
@@ -311,7 +305,7 @@ struct UnifiedSegmentationView: View {
             Spacer()
 
             Toggle("Show Mask", isOn: $showMask)
-                .disabled(samResult == nil)
+                .disabled(samResult == nil && textResult == nil)
         }
 
         if let result = samResult, result.masks.count > 1 {
@@ -334,20 +328,9 @@ struct UnifiedSegmentationView: View {
     private var textControls: some View {
         // Detection summary
         if let result = textResult, !result.detections.isEmpty {
-            HStack {
-                Text("\(result.detections.count) object(s) found")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Toggle("Masks", isOn: $showMask)
-                    .fixedSize()
-                Button("Clear") {
-                    textResult = nil
-                    selectedTextIndices.removeAll()
-                    errorMessage = nil
-                }
+            Text("\(result.detections.count) object(s) found")
                 .font(.caption)
-            }
+                .foregroundColor(.secondary)
         }
 
         // Text input
@@ -521,19 +504,10 @@ struct UnifiedSegmentationView: View {
         points.removeAll()
         boundingBox = nil
         samResult = nil
-        errorMessage = nil
-    }
-
-    private func clearModeResults() {
-        // Clear results when switching modes, but keep cached image embeddings
-        points.removeAll()
-        boundingBox = nil
-        samResult = nil
         textResult = nil
         selectedTextIndices.removeAll()
         selectedMaskIndex = 0
         errorMessage = nil
-        showNegativePoints = false
     }
 
     private func toggleTextSelection(_ index: Int) {
