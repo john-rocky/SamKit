@@ -20,7 +20,8 @@
 		A01234651234567890ABCDEF /* SAMKit in Frameworks */ = {isa = PBXBuildFile; productRef = A01234641234567890ABCDEF /* SAMKit */; };
 		A01234671234567890ABCDEF /* SAMKitUI in Frameworks */ = {isa = PBXBuildFile; productRef = A01234661234567890ABCDEF /* SAMKitUI */; };
 		C0GRND011234567890ABCDEF /* SAMKitGrounding in Frameworks */ = {isa = PBXBuildFile; productRef = C0GRND001234567890ABCDEF /* SAMKitGrounding */; };
-		C0GRND021234567890ABCDEF /* TextSegmentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0GRND031234567890ABCDEF /* TextSegmentationView.swift */; };
+		F0UNIF011234567890ABCDEF /* UnifiedSegmentationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0UNIF021234567890ABCDEF /* UnifiedSegmentationView.swift */; };
+		F0MDLM011234567890ABCDEF /* ModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0MDLM021234567890ABCDEF /* ModelManager.swift */; };
 		D0GRND041234567890ABCDEF /* clip_text_encoder.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = D0GRND071234567890ABCDEF /* clip_text_encoder.mlpackage */; };
 		D0GRND051234567890ABCDEF /* yoloworld_detector.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = D0GRND081234567890ABCDEF /* yoloworld_detector.mlpackage */; };
 		D0GRND061234567890ABCDEF /* clip_vocab.json in Resources */ = {isa = PBXBuildFile; fileRef = D0GRND091234567890ABCDEF /* clip_vocab.json */; };
@@ -40,7 +41,8 @@
 		A01234591234567890ABCDEF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A012345C1234567890ABCDEF /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		A012345E1234567890ABCDEF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		C0GRND031234567890ABCDEF /* TextSegmentationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextSegmentationView.swift; sourceTree = "<group>"; };
+		F0UNIF021234567890ABCDEF /* UnifiedSegmentationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnifiedSegmentationView.swift; sourceTree = "<group>"; };
+		F0MDLM021234567890ABCDEF /* ModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManager.swift; sourceTree = "<group>"; };
 		D0GRND071234567890ABCDEF /* clip_text_encoder.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = clip_text_encoder.mlpackage; sourceTree = "<group>"; };
 		D0GRND081234567890ABCDEF /* yoloworld_detector.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = yoloworld_detector.mlpackage; sourceTree = "<group>"; };
 		D0GRND091234567890ABCDEF /* clip_vocab.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = clip_vocab.json; sourceTree = "<group>"; };
@@ -88,7 +90,8 @@
 				B0MSAM012345678900000006 /* mobile_sam_prompt_encoder_weights.json */,
 				A01234551234567890ABCDEF /* SAMKitDemoApp.swift */,
 				A01234571234567890ABCDEF /* ContentView.swift */,
-				C0GRND031234567890ABCDEF /* TextSegmentationView.swift */,
+				F0UNIF021234567890ABCDEF /* UnifiedSegmentationView.swift */,
+				F0MDLM021234567890ABCDEF /* ModelManager.swift */,
 				D0GRND071234567890ABCDEF /* clip_text_encoder.mlpackage */,
 				D0GRND081234567890ABCDEF /* yoloworld_detector.mlpackage */,
 				D0GRND091234567890ABCDEF /* clip_vocab.json */,
@@ -197,7 +200,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A01234581234567890ABCDEF /* ContentView.swift in Sources */,
-				C0GRND021234567890ABCDEF /* TextSegmentationView.swift in Sources */,
+				F0UNIF011234567890ABCDEF /* UnifiedSegmentationView.swift in Sources */,
+				F0MDLM011234567890ABCDEF /* ModelManager.swift in Sources */,
 				A01234561234567890ABCDEF /* SAMKitDemoApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
