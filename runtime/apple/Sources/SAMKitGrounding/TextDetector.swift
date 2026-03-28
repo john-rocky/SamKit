@@ -6,12 +6,11 @@ import SAMKit
 
 /// Open-vocabulary object detection using YOLO-World + CLIP.
 ///
-/// The detection pipeline splits text-visual similarity out of CoreML
-/// and computes it in Swift to work around iOS CoreML limitations:
-///
-/// 1. Visual model (CoreML): image → boxes + visual features
+/// 1. Visual model (CoreML): image + text embeddings → boxes + class scores
+///    The model includes the full BNContrastiveHead scoring internally,
+///    so scores are already sigmoid-calibrated confidence values.
 /// 2. CLIP text encoder (CoreML): text → text embeddings
-/// 3. Similarity (Swift/Accelerate): features × text → class scores
+/// 3. Post-processing (Swift): NMS + filtering
 public final class TextDetector {
 
     // MARK: - Properties
@@ -23,16 +22,6 @@ public final class TextDetector {
     private let config: RuntimeConfig
     private let maxClasses: Int
     private let contextLength: Int
-
-    /// Per-level BNContrastiveHead parameters (logit_scale, bias, fused BatchNorm)
-    private struct CV4Level {
-        let logitScale: Float
-        let bias: Float
-        let bnScale: [Float]   // fused BN: y[c] = x[c] * bnScale[c] + bnOffset[c]
-        let bnOffset: [Float]
-    }
-    private let cv4Levels: [CV4Level]
-    private let anchorsPerLevel: [Int]
 
     /// Cache text embeddings by query string
     private var textEmbeddingCache: [String: [Float]] = [:]
@@ -52,33 +41,6 @@ public final class TextDetector {
         self.visualModel = try MLModel(contentsOf: model.detectorURL, configuration: mlConfig)
         self.tokenizer = try CLIPTokenizer(vocabularyURL: model.vocabularyURL)
         self.preprocessor = GroundingPreprocessor(inputSize: model.inputSize)
-
-        // Load cv4 parameters
-        let cv4Data = try Data(contentsOf: model.cv4ParamsURL)
-        guard let cv4Json = try JSONSerialization.jsonObject(with: cv4Data) as? [String: Any],
-              let levels = cv4Json["levels"] as? [[String: Any]],
-              let anchors = cv4Json["anchors_per_level"] as? [Int] else {
-            throw GroundingError.modelNotFound("Invalid cv4_params.json format")
-        }
-
-        self.cv4Levels = levels.map { level in
-            let bnScale = Self.parseFloatArray(level["bn_scale"])
-            let bnOffset = Self.parseFloatArray(level["bn_offset"])
-            return CV4Level(
-                logitScale: (level["logit_scale"] as? NSNumber)?.floatValue ?? 0,
-                bias: (level["bias"] as? NSNumber)?.floatValue ?? 0,
-                bnScale: bnScale,
-                bnOffset: bnOffset
-            )
-        }
-        self.anchorsPerLevel = anchors
-
-        // Validate BN parameters are present
-        for (i, level) in self.cv4Levels.enumerated() {
-            if level.bnScale.isEmpty || level.bnOffset.isEmpty {
-                print("[SAMKitGrounding] WARNING: Level \(i) missing BN params (scale=\(level.bnScale.count), offset=\(level.bnOffset.count)). Scores will be very low.")
-            }
-        }
     }
 
     // MARK: - Text Encoding
@@ -92,15 +54,12 @@ public final class TextDetector {
                 continue
             }
 
-            // Tokenize: pad to maxClasses slots, single query in slot 0
             let tokenArray = try MLMultiArray(
                 shape: [maxClasses as NSNumber, contextLength as NSNumber],
                 dataType: .int32
             )
             let tokenPtr = tokenArray.dataPointer.bindMemory(to: Int32.self, capacity: maxClasses * contextLength)
-            // Zero fill
             memset(tokenPtr, 0, maxClasses * contextLength * 4)
-            // Fill slot 0 with query tokens
             let tokens = tokenizer.tokenize(query)
             for j in 0..<contextLength {
                 tokenPtr[j] = Int32(tokens[j])
@@ -112,13 +71,12 @@ public final class TextDetector {
                 throw GroundingError.invalidModelOutput("Missing text_embeddings")
             }
 
-            // Extract slot 0 embedding [512] and convert to Float32
             let dim = 512
             var embedding = [Float](repeating: 0, count: dim)
             let emb = readMLMultiArrayAsFloat(embeddings)
             for i in 0..<dim { embedding[i] = emb[i] }
 
-            // L2 normalize (should already be normalized, but ensure)
+            // L2 normalize
             var norm: Float = 0
             vDSP_svesq(embedding, 1, &norm, vDSP_Length(dim))
             norm = sqrt(norm)
@@ -144,10 +102,10 @@ public final class TextDetector {
         let t0 = CFAbsoluteTimeGetCurrent()
 
         // 1. Encode text
-        let textEmbeddings = try encodeText(queries) // [[Float]] each [512]
+        let textEmbeddings = try encodeText(queries)
         let t1 = CFAbsoluteTimeGetCurrent()
 
-        // 2. Run visual model with txt_feats (C2fAttn uses it for text-guided attention)
+        // 2. Run visual model — scores are computed inside the model (BNContrastiveHead)
         let (processedImage, transform) = try preprocessor.process(image)
         let txtFeatsArray = try buildTxtFeatsArray(textEmbeddings)
         let visualInput = try MLDictionaryFeatureProvider(dictionary: [
@@ -157,95 +115,50 @@ public final class TextDetector {
         let visualOutput = try visualModel.prediction(from: visualInput)
 
         guard let boxesArray = visualOutput.featureValue(for: "boxes")?.multiArrayValue,
-              let featsArray = visualOutput.featureValue(for: "features")?.multiArrayValue else {
-            throw GroundingError.invalidModelOutput("Missing boxes or features")
+              let scoresArray = visualOutput.featureValue(for: "scores")?.multiArrayValue else {
+            throw GroundingError.invalidModelOutput("Missing boxes or scores")
         }
         let t2 = CFAbsoluteTimeGetCurrent()
 
-        // 3. Compute text-visual similarity in Swift
-        let boxes = readMLMultiArrayAsFloat(boxesArray)     // [1, 4, 8400] flattened
-        let features = readMLMultiArrayAsFloat(featsArray)   // [1, 512, 8400] flattened
+        // 3. Read pre-computed scores and filter
+        let boxes = readMLMultiArrayAsFloat(boxesArray)     // [1, 4, 8400]
+        let scores = readMLMultiArrayAsFloat(scoresArray)   // [1, NC, 8400]
 
-        let featShape = featsArray.shape.map { $0.intValue }
-        let numAnchors: Int
-        let embedDim: Int
-        if featShape.count == 3 {
-            embedDim = featShape[1]; numAnchors = featShape[2]
-        } else {
-            embedDim = 512; numAnchors = 8400
-        }
+        let scoresShape = scoresArray.shape.map { $0.intValue }
+        let numClasses = scoresShape.count >= 2 ? scoresShape[1] : maxClasses
+        let numAnchors = scoresShape.count >= 3 ? scoresShape[2] : 8400
 
-        // Compute scores for each query
         var allDetections: [DetectorBox] = []
         var allScores: [Float] = []
         var allClassIds: [Int] = []
 
-        for (queryIdx, textEmb) in textEmbeddings.enumerated() {
-            // BNContrastiveHead formula per level:
-            //   bn_feat[c] = feat[c] * bn_scale[c] + bn_offset[c]
-            //   dot = sum(bn_feat[c] * text[c])
-            //       = sum(feat[c] * bn_scale[c] * text[c]) + sum(bn_offset[c] * text[c])
-            //       = dot(feat, scaledText) + offsetDot
-            //   logit = dot * exp(logit_scale) + bias
-            //   score = sigmoid(logit)
-            var anchorOffset = 0
-            for (levelIdx, level) in cv4Levels.enumerated() {
-                let numAnchorsInLevel = anchorsPerLevel[levelIdx]
+        for queryIdx in 0..<min(queries.count, numClasses) {
+            let classOffset = queryIdx * numAnchors
 
-                // Pre-compute scaledText[c] = textEmb[c] * bnScale[c]
-                var scaledText = [Float](repeating: 0, count: embedDim)
-                if level.bnScale.count == embedDim {
-                    vDSP_vmul(textEmb, 1, level.bnScale, 1, &scaledText, 1, vDSP_Length(embedDim))
-                } else {
-                    scaledText = textEmb
-                }
+            for anchor in 0..<numAnchors {
+                let score = scores[classOffset + anchor]
+                if score < options.confidenceThreshold { continue }
 
-                // Pre-compute offsetDot = dot(bnOffset, textEmb) (constant for all anchors)
-                var offsetDot: Float = 0
-                if level.bnOffset.count == embedDim {
-                    vDSP_dotpr(level.bnOffset, 1, textEmb, 1, &offsetDot, vDSP_Length(embedDim))
-                }
+                let cx = boxes[0 * numAnchors + anchor]
+                let cy = boxes[1 * numAnchors + anchor]
+                let w  = boxes[2 * numAnchors + anchor]
+                let h  = boxes[3 * numAnchors + anchor]
 
-                let expScale = exp(level.logitScale)
+                let box = DetectorBox(
+                    x0: cx - w / 2, y0: cy - h / 2,
+                    x1: cx + w / 2, y1: cy + h / 2
+                )
+                let imgBox = preprocessor.toImageCoordinates(box, transform: transform)
+                let clamped = DetectorBox(
+                    x0: max(0, min(imgBox.x0, Float(transform.originalWidth))),
+                    y0: max(0, min(imgBox.y0, Float(transform.originalHeight))),
+                    x1: max(0, min(imgBox.x1, Float(transform.originalWidth))),
+                    y1: max(0, min(imgBox.y1, Float(transform.originalHeight)))
+                )
 
-                for i in 0..<numAnchorsInLevel {
-                    let anchor = anchorOffset + i
-                    // dot(feat[:, anchor], scaledText) via vDSP with strided access
-                    var rawDot: Float = 0
-                    // features layout: [embedDim, numAnchors], feat[c, n] = features[c * numAnchors + n]
-                    features.withUnsafeBufferPointer { featBuf in
-                        let base = featBuf.baseAddress! + anchor
-                        vDSP_dotpr(base, numAnchors, scaledText, 1, &rawDot, vDSP_Length(embedDim))
-                    }
-
-                    let logit = (rawDot + offsetDot) * expScale + level.bias
-                    let score = 1.0 / (1.0 + exp(-min(max(logit, -50), 50)))
-
-                    if score < options.confidenceThreshold { continue }
-
-                    // Read box: [4, numAnchors], layout [ch, anchor]
-                    let cx = boxes[0 * numAnchors + anchor]
-                    let cy = boxes[1 * numAnchors + anchor]
-                    let w  = boxes[2 * numAnchors + anchor]
-                    let h  = boxes[3 * numAnchors + anchor]
-
-                    let box = DetectorBox(
-                        x0: cx - w / 2, y0: cy - h / 2,
-                        x1: cx + w / 2, y1: cy + h / 2
-                    )
-                    let imgBox = preprocessor.toImageCoordinates(box, transform: transform)
-                    let clamped = DetectorBox(
-                        x0: max(0, min(imgBox.x0, Float(transform.originalWidth))),
-                        y0: max(0, min(imgBox.y0, Float(transform.originalHeight))),
-                        x1: max(0, min(imgBox.x1, Float(transform.originalWidth))),
-                        y1: max(0, min(imgBox.y1, Float(transform.originalHeight)))
-                    )
-
-                    allDetections.append(clamped)
-                    allScores.append(score)
-                    allClassIds.append(queryIdx)
-                }
-                anchorOffset += numAnchorsInLevel
+                allDetections.append(clamped)
+                allScores.append(score)
+                allClassIds.append(queryIdx)
             }
         }
 
@@ -258,18 +171,14 @@ public final class TextDetector {
         )
 
         let topIndices = Array(kept.prefix(options.maxDetections))
-        if !allScores.isEmpty {
-            let best = allScores.max() ?? 0
-            print("[SAMKitGrounding] maxScore=\(best) candidates=\(allScores.count) (bnScale0=\(cv4Levels.first?.bnScale.count ?? 0))")
-        }
         guard !topIndices.isEmpty else {
-            print("[SAMKitGrounding] text=\(Int((t1-t0)*1000))ms visual=\(Int((t2-t1)*1000))ms match=\(Int((t3-t2)*1000))ms | no detections")
+            print("[SAMKitGrounding] text=\(Int((t1-t0)*1000))ms visual=\(Int((t2-t1)*1000))ms post=\(Int((t3-t2)*1000))ms | no detections")
             return []
         }
 
-        // Filter: keep only within 30% of top score
+        // Filter: keep only scores within 50% of top score
         let maxScore = topIndices.map { allScores[$0] }.max() ?? 0
-        let cutoff = maxScore * 0.3
+        let cutoff = maxScore * 0.5
 
         let results: [GroundingResult] = topIndices.compactMap { idx in
             guard allScores[idx] >= cutoff else { return nil }
@@ -283,7 +192,7 @@ public final class TextDetector {
         }
 
         let t4 = CFAbsoluteTimeGetCurrent()
-        print("[SAMKitGrounding] text=\(Int((t1-t0)*1000))ms visual=\(Int((t2-t1)*1000))ms match=\(Int((t3-t2)*1000))ms post=\(Int((t4-t3)*1000))ms | \(results.count) detections")
+        print("[SAMKitGrounding] text=\(Int((t1-t0)*1000))ms visual=\(Int((t2-t1)*1000))ms post=\(Int((t3-t2)*1000))ms nms=\(Int((t4-t3)*1000))ms | \(results.count) detections (maxScore=\(String(format: "%.3f", maxScore)))")
 
         return results
     }
@@ -296,26 +205,18 @@ public final class TextDetector {
 
     // MARK: - Helpers
 
-    /// Build txt_feats MLMultiArray [1, maxClasses, 512] for the visual model's C2fAttn
+    /// Build txt_feats MLMultiArray [1, maxClasses, 512] for the visual model
     private func buildTxtFeatsArray(_ embeddings: [[Float]]) throws -> MLMultiArray {
         let dim = 512
         let array = try MLMultiArray(shape: [1, maxClasses as NSNumber, dim as NSNumber], dataType: .float32)
         let ptr = array.dataPointer.bindMemory(to: Float32.self, capacity: maxClasses * dim)
-        // Zero fill
         memset(ptr, 0, maxClasses * dim * 4)
-        // Fill with query embeddings
         for (i, emb) in embeddings.prefix(maxClasses).enumerated() {
             for j in 0..<min(emb.count, dim) {
                 ptr[i * dim + j] = emb[j]
             }
         }
         return array
-    }
-
-    /// Parse a JSON array of numbers to [Float], handling NSNumber bridging
-    private static func parseFloatArray(_ value: Any?) -> [Float] {
-        guard let array = value as? [Any] else { return [] }
-        return array.map { ($0 as? NSNumber)?.floatValue ?? 0 }
     }
 
     /// Read MLMultiArray data as Float32 array (handles FP16 conversion)
@@ -327,7 +228,6 @@ public final class TextDetector {
             let ptr = array.dataPointer.bindMemory(to: Float32.self, capacity: count)
             for i in 0..<count { result[i] = ptr[i] }
         } else {
-            // Float16
             let ptr = array.dataPointer.bindMemory(to: UInt16.self, capacity: count)
             for i in 0..<count { result[i] = float16ToFloat32(ptr[i]) }
         }
