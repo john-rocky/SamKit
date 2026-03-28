@@ -2,13 +2,19 @@
 """
 Convert YOLO-World model to Core ML format for open-vocabulary object detection.
 
-Produces three outputs:
-  1. yoloworld_detector.mlpackage - Visual detector (accepts image + text embeddings)
+Produces four outputs:
+  1. yoloworld_detector.mlpackage - Visual detector with separate boxes + features outputs
   2. clip_text_encoder.mlpackage  - CLIP text encoder (any text → embeddings)
   3. clip_vocab.json              - BPE vocabulary for Swift tokenizer
+  4. cv4_params.json              - Fused BNContrastiveHead parameters for Swift scoring
 
-The detector accepts pre-computed text embeddings as input, enabling
-open-vocabulary detection with arbitrary text queries at runtime.
+Architecture note:
+  The CoreML detector outputs raw cv3 visual features (pre-BN, pre-contrastive head).
+  The BNContrastiveHead scoring (BatchNorm + dot product + logit_scale + bias) is
+  computed in Swift using the parameters from cv4_params.json. This split allows
+  open-vocabulary detection with arbitrary text queries at runtime.
+
+  See extract_cv4_params.py for the parameter extraction script.
 
 Usage:
     python convert_yoloworld_to_coreml.py --output ../manifests/grounding

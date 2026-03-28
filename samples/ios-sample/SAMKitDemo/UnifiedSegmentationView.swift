@@ -117,6 +117,41 @@ struct UnifiedSegmentationView: View {
                                     .allowsHitTesting(false)
                             }
                         }
+
+                        // Text detection bounding boxes
+                        ForEach(Array(result.detections.enumerated()), id: \.offset) { index, detection in
+                            let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
+                            if isSelected {
+                                let topLeft = imageToView(
+                                    CGPoint(x: CGFloat(detection.box.x0), y: CGFloat(detection.box.y0)),
+                                    viewSize: geometry.size
+                                )
+                                let bottomRight = imageToView(
+                                    CGPoint(x: CGFloat(detection.box.x1), y: CGFloat(detection.box.y1)),
+                                    viewSize: geometry.size
+                                )
+                                let w = abs(bottomRight.x - topLeft.x)
+                                let h = abs(bottomRight.y - topLeft.y)
+
+                                Rectangle()
+                                    .stroke(Color.yellow, lineWidth: 2)
+                                    .frame(width: w, height: h)
+                                    .position(
+                                        x: topLeft.x + w / 2,
+                                        y: topLeft.y + h / 2
+                                    )
+
+                                // Label + confidence
+                                Text("\(detection.label) \(String(format: "%.0f%%", detection.confidence * 100))")
+                                    .font(.caption2.bold())
+                                    .foregroundColor(.black)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.yellow.opacity(0.85))
+                                    .cornerRadius(3)
+                                    .position(x: topLeft.x + w / 2, y: topLeft.y - 10)
+                            }
+                        }
                     }
 
 

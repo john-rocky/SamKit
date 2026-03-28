@@ -101,7 +101,7 @@ public struct TextPromptOptions {
     public let multimaskOutput: Bool
 
     public init(
-        confidenceThreshold: Float = 0.0005,
+        confidenceThreshold: Float = 0.25,
         nmsThreshold: Float = 0.5,
         maxDetections: Int = 5,
         multimaskOutput: Bool = false
