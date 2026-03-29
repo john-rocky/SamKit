@@ -3,21 +3,19 @@
 Convert YOLO-World model to Core ML format for open-vocabulary object detection.
 
 Produces four outputs:
-  1. yoloworld_detector.mlpackage - Visual detector with separate boxes + features outputs
+  1. yoloworld_detector.mlpackage - Visual detector (boxes + scores outputs)
   2. clip_text_encoder.mlpackage  - CLIP text encoder (any text → embeddings)
   3. clip_vocab.json              - BPE vocabulary for Swift tokenizer
-  4. cv4_params.json              - Fused BNContrastiveHead parameters for Swift scoring
+  4. cv4_params.json              - BNContrastiveHead parameters (reference)
 
 Architecture note:
-  The CoreML detector outputs raw cv3 visual features (pre-BN, pre-contrastive head).
-  The BNContrastiveHead scoring (BatchNorm + dot product + logit_scale + bias) is
-  computed in Swift using the parameters from cv4_params.json. This split allows
-  open-vocabulary detection with arbitrary text queries at runtime.
-
-  See extract_cv4_params.py for the parameter extraction script.
+  The CoreML detector includes the full BNContrastiveHead scoring pipeline
+  internally, so output scores are already sigmoid-calibrated confidence values.
+  The model outputs separate "boxes" [1,4,8400] and "scores" [1,NC,8400] tensors.
 
 Usage:
     python convert_yoloworld_to_coreml.py --output ../manifests/grounding
+    python convert_yoloworld_to_coreml.py --size m --output ../manifests/grounding
 """
 
 import argparse
@@ -37,13 +35,27 @@ import coremltools as ct
 MAX_CLASSES = 80
 CONTEXT_LENGTH = 77
 
+# Model size variants: all use CLIP ViT-B/32 (512-dim), differ in visual backbone
+YOLO_WORLD_MODELS = {
+    "s": "yolov8s-worldv2",   # ~25 MB CoreML, COCO AP ~38.7
+    "m": "yolov8m-worldv2",   # ~50 MB CoreML, COCO AP ~43.3
+    "l": "yolov8l-worldv2",   # ~80 MB CoreML, COCO AP ~46.5
+    "x": "yolov8x-worldv2",   # ~130 MB CoreML, COCO AP ~47.5
+}
+YOLO_WORLD_DESCRIPTIONS = {
+    "s": "YOLO-World V2-S",
+    "m": "YOLO-World V2-M",
+    "l": "YOLO-World V2-L",
+    "x": "YOLO-World V2-X",
+}
+
 
 # ---------------------------------------------------------------------------
 # Step 1: YOLO-World Visual Detector
 # ---------------------------------------------------------------------------
 
 class YOLOWorldDetectorWrapper(nn.Module):
-    """Wraps YOLO-World to accept text embeddings as explicit input."""
+    """Wraps YOLO-World to accept text embeddings and output split boxes/scores."""
 
     def __init__(self, world_model):
         super().__init__()
@@ -52,12 +64,27 @@ class YOLOWorldDetectorWrapper(nn.Module):
     def forward(self, image, txt_feats):
         self.model.txt_feats = txt_feats
         out = self.model(image)
-        return out[0]  # [1, 4+NC, 8400]
+        pred = out[0]              # [1, 4+NC, 8400]
+        boxes = pred[:, :4, :]     # [1, 4, 8400] — cx, cy, w, h
+        scores = pred[:, 4:, :]    # [1, NC, 8400] — sigmoid scores
+        return boxes, scores
 
 
 def convert_detector(model_name: str, output_dir: Path, input_size: int = 640):
     """Convert YOLO-World visual detector to CoreML."""
-    print("=== Converting Visual Detector ===")
+    # Resolve size shorthand
+    size_key = model_name.lower()
+    if size_key in YOLO_WORLD_MODELS:
+        model_name = YOLO_WORLD_MODELS[size_key]
+        desc = YOLO_WORLD_DESCRIPTIONS[size_key]
+    else:
+        desc = model_name
+        for k, v in YOLO_WORLD_MODELS.items():
+            if model_name == v:
+                desc = YOLO_WORLD_DESCRIPTIONS[k]
+                break
+
+    print(f"=== Converting Visual Detector ({desc}) ===")
 
     from ultralytics import YOLO
     model = YOLO(model_name)
@@ -87,15 +114,16 @@ def convert_detector(model_name: str, output_dir: Path, input_size: int = 640):
             ct.TensorType(name="txt_feats", shape=(1, MAX_CLASSES, 512)),
         ],
         outputs=[
-            ct.TensorType(name="predictions"),
+            ct.TensorType(name="boxes"),
+            ct.TensorType(name="scores"),
         ],
         compute_precision=ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.iOS15,
     )
 
     mlmodel.author = "SAMKit"
-    mlmodel.short_description = "YOLO-World V2-S Visual Detector (open-vocabulary)"
-    mlmodel.version = "1.0.0"
+    mlmodel.short_description = f"{desc} Visual Detector (open-vocabulary)"
+    mlmodel.version = "2.0.0"
 
     out_path = output_dir / "yoloworld_detector.mlpackage"
     mlmodel.save(str(out_path))
@@ -252,8 +280,12 @@ def main():
         description="Convert YOLO-World + CLIP to CoreML for open-vocabulary detection"
     )
     parser.add_argument(
-        "--model", type=str, default="yolov8s-worldv2",
-        help="YOLO-World model variant (default: yolov8s-worldv2)",
+        "--size", type=str, default=None, choices=["s", "m", "l", "x"],
+        help="Model size shorthand: s(mall), m(edium), l(arge), x(tra-large)",
+    )
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help="YOLO-World model name (overrides --size)",
     )
     parser.add_argument(
         "--output", type=str, default="../manifests/grounding",
@@ -268,8 +300,17 @@ def main():
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resolve model name: --model overrides --size, default is L
+    if args.model:
+        model_name = args.model
+    elif args.size:
+        model_name = YOLO_WORLD_MODELS[args.size]
+    else:
+        model_name = YOLO_WORLD_MODELS["l"]
+        print("Using default model size: L (use --size s/m/l/x to change)")
+
     # Convert all components
-    det_path = convert_detector(args.model, output_dir, args.input_size)
+    det_path = convert_detector(model_name, output_dir, args.input_size)
     text_path = convert_text_encoder(output_dir)
     vocab_path = export_vocabulary(output_dir)
 

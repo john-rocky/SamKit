@@ -22,8 +22,16 @@ import json
 import numpy as np
 from pathlib import Path
 
+# Model size variants
+YOLO_WORLD_MODELS = {
+    "s": "yolov8s-worldv2",
+    "m": "yolov8m-worldv2",
+    "l": "yolov8l-worldv2",
+    "x": "yolov8x-worldv2",
+}
 
-def extract_params(model_name: str = "yolov8s-worldv2"):
+
+def extract_params(model_name: str = "yolov8l-worldv2"):
     """Extract BNContrastiveHead parameters from YOLO-World model."""
     from ultralytics import YOLO
 
@@ -81,8 +89,12 @@ def main():
         description="Extract BNContrastiveHead parameters for iOS inference"
     )
     parser.add_argument(
-        "--model", type=str, default="yolov8s-worldv2",
-        help="YOLO-World model variant",
+        "--size", type=str, default=None, choices=["s", "m", "l", "x"],
+        help="Model size shorthand: s(mall), m(edium), l(arge), x(tra-large)",
+    )
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help="YOLO-World model name (overrides --size)",
     )
     parser.add_argument(
         "--output", type=str, default="../manifests/grounding/cv4_params.json",
@@ -90,7 +102,14 @@ def main():
     )
     args = parser.parse_args()
 
-    params = extract_params(args.model)
+    if args.model:
+        model_name = args.model
+    elif args.size:
+        model_name = YOLO_WORLD_MODELS[args.size]
+    else:
+        model_name = YOLO_WORLD_MODELS["l"]
+
+    params = extract_params(model_name)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
