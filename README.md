@@ -11,20 +11,22 @@
   </p>
 </p>
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/2a4364ee-a3fc-4e40-a0bb-b3c7c9bfa0f5" width="300" alt="SAMKit Demo" />
+</p>
+
 ---
 
 SAMKit brings Meta's [Segment Anything Model](https://github.com/facebookresearch/segment-anything) to iOS as a native Swift package. Tap, draw, or describe any object to instantly segment it — all inference runs on-device with Core ML, no server required.
 
-## Highlights
+## Features
 
-| | |
-|---|---|
-| **Point & Box** | Tap a point or drag a box to segment any object |
-| **Text Prompt** | Type `"dog"` or `"red cup"` — powered by YOLO-World + CLIP |
-| **Object Lift** | Extract objects with transparent background, copy/save/share |
-| **Two Backbones** | MobileSAM (fast, 23 MB) and SAM2 Tiny (accurate, 76 MB) |
-| **Drop-in UI** | Pre-built SwiftUI views — ship a segmentation feature in minutes |
-| **On-Device** | Neural Engine / GPU acceleration, FP16, no network calls |
+- **Point & Box** &mdash; Tap a point or drag a bounding box to segment any object
+- **Text Prompt** &mdash; Type `"dog"` or `"red cup"` to find and segment objects, powered by YOLO-World + CLIP
+- **Subject Lift** &mdash; Long-press to lift the segmented object from the scene, then copy, save, or share as a transparent PNG
+- **Two Backbones** &mdash; MobileSAM (fast, 23 MB) and SAM2 Tiny (accurate, 76 MB)
+- **Drop-in UI** &mdash; Pre-built SwiftUI views for shipping a segmentation feature in minutes
+- **Fully On-Device** &mdash; Neural Engine / GPU acceleration, FP16, zero network calls
 
 ## Requirements
 
@@ -41,8 +43,6 @@ dependencies: [
     .package(url: "https://github.com/john-rocky/SamKit.git", from: "1.0.0")
 ]
 ```
-
-Import what you need:
 
 | Product | What it does |
 |---------|-------------|
@@ -139,6 +139,16 @@ let result = try session.segment(query: "dog, cat")
 // result.detections — bounding boxes + labels
 ```
 
+### Subject Lifting
+
+```swift
+import SAMKit
+
+// After segmentation, extract the object with transparency
+let extracted = SamMask.extractObject(from: cgImage, masks: result.masks)
+// Returns a CGImage with transparent background — ready for copy/save/share
+```
+
 ## Architecture
 
 ```
@@ -147,7 +157,7 @@ SAMKit/
 │   ├── SAMKit/            # Core inference engine
 │   ├── SAMKitGrounding/   # YOLO-World + CLIP text detection
 │   └── SAMKitUI/          # SwiftUI components
-├── models/converters/     # PyTorch → Core ML conversion scripts
+├── models/converters/     # PyTorch -> Core ML conversion scripts
 ├── samples/ios-sample/    # Full demo app
 └── CLAUDE.md
 ```
