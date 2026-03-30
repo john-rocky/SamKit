@@ -37,7 +37,8 @@ struct UnifiedSegmentationView: View {
     @State private var errorMessage: String?
     @FocusState private var isTextFieldFocused: Bool
 
-    // Outline animation
+    // Processed mask and outline
+    @State private var binaryMask: CGImage?
     @State private var outlineImage: CGImage?
 
     // Lift object state
@@ -593,6 +594,7 @@ struct UnifiedSegmentationView: View {
         textResult = nil
         selectedTextIndices.removeAll()
         errorMessage = nil
+        binaryMask = nil
         outlineImage = nil
     }
 
@@ -619,24 +621,11 @@ struct UnifiedSegmentationView: View {
 
     @ViewBuilder
     private func maskOverlayView(geometry: GeometryProxy) -> some View {
-        ZStack {
-            if let result = samResult, !result.masks.isEmpty {
-                Image(uiImage: UIImage(cgImage: result.masks[0].cgImage))
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-            }
-            if let result = textResult {
-                ForEach(Array(result.masks.enumerated()), id: \.offset) { index, mask in
-                    let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
-                    if isSelected {
-                        Image(uiImage: UIImage(cgImage: mask.cgImage))
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                    }
-                }
-            }
+        if let mask = binaryMask {
+            Image(uiImage: UIImage(cgImage: mask))
+                .resizable()
+                .scaledToFit()
+                .frame(width: geometry.size.width, height: geometry.size.height)
         }
     }
 
@@ -861,6 +850,42 @@ struct UnifiedSegmentationView: View {
         return ctx.makeImage()
     }
 
+    private func binarizeMask(_ maskImage: CGImage) -> CGImage? {
+        let width = maskImage.width
+        let height = maskImage.height
+
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        ctx.draw(maskImage, in: rect)
+
+        guard let data = ctx.data else { return nil }
+        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        let threshold: UInt8 = 128
+        for i in 0..<(width * height) {
+            let o = i * 4
+            if pixels[o + 3] >= threshold {
+                pixels[o] = 255
+                pixels[o + 1] = 255
+                pixels[o + 2] = 255
+                pixels[o + 3] = 255
+            } else {
+                pixels[o] = 0
+                pixels[o + 1] = 0
+                pixels[o + 2] = 0
+                pixels[o + 3] = 0
+            }
+        }
+
+        return ctx.makeImage()
+    }
+
     private func updateOutline() {
         let currentSamResult = samResult
         let currentTextResult = textResult
@@ -881,14 +906,19 @@ struct UnifiedSegmentationView: View {
             }
 
             guard !maskImages.isEmpty else {
-                await MainActor.run { outlineImage = nil }
+                await MainActor.run {
+                    binaryMask = nil
+                    outlineImage = nil
+                }
                 return
             }
 
             let composed = composeMasks(maskImages)
-            let outline = composed.flatMap { generateOutline(from: $0) }
+            let binary = composed.flatMap { binarizeMask($0) }
+            let outline = binary.flatMap { generateOutline(from: $0) }
 
             await MainActor.run {
+                self.binaryMask = binary
                 self.outlineImage = outline
             }
         }
