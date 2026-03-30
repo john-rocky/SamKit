@@ -97,31 +97,6 @@ struct UnifiedSegmentationView: View {
                                 }
                             : nil
                         )
-                        .simultaneousGesture(
-                            LongPressGesture(minimumDuration: 0.5)
-                                .simultaneously(with: DragGesture())
-                                .onChanged { value in
-                                    if isLifted {
-                                        // Already lifted — track drag
-                                        if let drag = value.second {
-                                            liftDragOffset = drag.translation
-                                        }
-                                    } else if hasVisibleMasks && value.first == true {
-                                        // Long press recognized — start lift
-                                        handleLiftObject()
-                                    }
-                                }
-                                .onEnded { _ in
-                                    guard isLifted else { return }
-                                    // Finger up — snap back and show menu
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                        liftDragOffset = .zero
-                                    }
-                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                                        showLiftMenu = true
-                                    }
-                                }
-                        )
                         .onTapGesture { location in
                             guard !isLifted else { return }
                             if isTextFieldFocused {
@@ -129,6 +104,10 @@ struct UnifiedSegmentationView: View {
                             } else {
                                 handleTap(at: location, geometry: geometry)
                             }
+                        }
+                        .onLongPressGesture(minimumDuration: 0.5) {
+                            guard !isLifted, hasVisibleMasks else { return }
+                            handleLiftObject()
                         }
 
                     // Subject highlight — dim background + bright subject
@@ -261,22 +240,41 @@ struct UnifiedSegmentationView: View {
 
                     // MARK: In-place subject lift
                     if isLifted {
-                        // Dimmed background — only intercepts taps when menu is showing
+                        // Dimmed background
                         Color.black.opacity(0.4)
                             .ignoresSafeArea()
-                            .allowsHitTesting(showLiftMenu)
                             .contentShape(Rectangle())
                             .onTapGesture { dismissLift() }
 
-                        // Lifted object — purely visual, gesture handled by base image
+                        // Lifted object — draggable
                         liftedSubjectView(geometry: geometry)
                             .shadow(color: .black.opacity(0.6), radius: 24, y: 12)
                             .scaleEffect(showLiftMenu ? 1.0 : 1.05)
                             .offset(liftDragOffset)
-                            .allowsHitTesting(false)
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        liftDragOffset = value.translation
+                                        if showLiftMenu {
+                                            withAnimation(.easeOut(duration: 0.15)) {
+                                                showLiftMenu = false
+                                            }
+                                        }
+                                    }
+                                    .onEnded { _ in
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                            liftDragOffset = .zero
+                                        }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                                showLiftMenu = true
+                                            }
+                                        }
+                                    }
+                            )
                             .animation(.spring(response: 0.35, dampingFraction: 0.75), value: showLiftMenu)
 
-                        // Context menu — appears on finger up
+                        // Context menu
                         if showLiftMenu {
                             liftContextMenu
                                 .transition(.scale(scale: 0.8).combined(with: .opacity))
@@ -698,6 +696,11 @@ struct UnifiedSegmentationView: View {
 
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
             isLifted = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                showLiftMenu = true
+            }
         }
     }
 
