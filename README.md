@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/d25ff3c2-91e1-4c86-8959-ff7b7dc3829f" width="600" alt="SAMKit" />
+  <img src="https://github.com/user-attachments/assets/d25ff3c2-91e1-4c86-8959-ff7b7dc3829f" width="300" alt="SAMKit" />
 </p>
 <p align="center">
   <strong>Segment Anything, right on your iPhone.</strong>
