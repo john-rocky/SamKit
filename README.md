@@ -1,14 +1,14 @@
 <p align="center">
-  <h1 align="center">SAMKit</h1>
-  <p align="center">
-    <strong>Segment Anything, right on your iPhone.</strong>
-  </p>
-  <p align="center">
-    <a href="#installation">Install</a> &middot;
-    <a href="#quick-start">Quick Start</a> &middot;
-    <a href="#sample-app">Demo App</a> &middot;
-    <a href="https://github.com/john-rocky/SamKit/releases">Download Models</a>
-  </p>
+  <img src="https://github.com/user-attachments/assets/d25ff3c2-91e1-4c86-8959-ff7b7dc3829f" width="600" alt="SAMKit" />
+</p>
+<p align="center">
+  <strong>Segment Anything, right on your iPhone.</strong>
+</p>
+<p align="center">
+  <a href="#installation">Install</a> &middot;
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#sample-app">Demo App</a> &middot;
+  <a href="https://github.com/john-rocky/SamKit/releases">Download Models</a>
 </p>
 
 <p align="center">
