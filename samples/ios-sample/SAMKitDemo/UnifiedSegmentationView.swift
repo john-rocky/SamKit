@@ -45,9 +45,14 @@ struct UnifiedSegmentationView: View {
     @State private var liftedImage: UIImage?
     @State private var isLifted = false
     @State private var liftDragOffset: CGSize = .zero
+    @State private var liftStartTranslation: CGSize = .zero
     @State private var showLiftMenu = false
     @State private var toastMessage: String?
     @State private var showShareSheet = false
+
+    // Unified gesture tracking
+    @State private var gestureStartTime: Date?
+    @State private var lastGestureTranslation: CGSize = .zero
 
     private var hasVisibleMasks: Bool {
         if let result = samResult, !result.masks.isEmpty { return true }
@@ -66,49 +71,84 @@ struct UnifiedSegmentationView: View {
                         .frame(width: geometry.size.width, height: geometry.size.height)
                         .contentShape(Rectangle())
                         .gesture(
-                            toolMode == .box ?
-                            DragGesture()
+                            DragGesture(minimumDistance: 0)
                                 .onChanged { value in
-                                    guard !isLifted else { return }
-                                    if dragStart == nil {
-                                        dragStart = value.startLocation
+                                    if gestureStartTime == nil {
+                                        gestureStartTime = Date()
+                                        // Schedule long press check via timer
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                            guard gestureStartTime != nil,
+                                                  !isLifted,
+                                                  hasVisibleMasks,
+                                                  dragStart == nil else { return }
+                                            let moved = hypot(lastGestureTranslation.width, lastGestureTranslation.height)
+                                            guard moved < 15 else { return }
+                                            liftStartTranslation = lastGestureTranslation
+                                            handleLiftObject()
+                                        }
                                     }
-                                    dragEnd = value.location
+
+                                    lastGestureTranslation = value.translation
+
+                                    // Already lifted — track drag offset
+                                    if isLifted {
+                                        liftDragOffset = CGSize(
+                                            width: value.translation.width - liftStartTranslation.width,
+                                            height: value.translation.height - liftStartTranslation.height
+                                        )
+                                        return
+                                    }
+
+                                    // Box drag
+                                    let moved = hypot(value.translation.width, value.translation.height)
+                                    if toolMode == .box && moved >= 10 {
+                                        if dragStart == nil { dragStart = value.startLocation }
+                                        dragEnd = value.location
+                                    }
                                 }
                                 .onEnded { value in
-                                    guard !isLifted else { return }
-                                    guard let start = dragStart else { return }
-                                    let startPoint = viewToImage(start, viewSize: geometry.size)
-                                    let endPoint = viewToImage(value.location, viewSize: geometry.size)
+                                    let elapsed = Date().timeIntervalSince(gestureStartTime ?? Date())
+                                    let moved = hypot(value.translation.width, value.translation.height)
+                                    gestureStartTime = nil
+                                    lastGestureTranslation = .zero
 
-                                    let minX = min(startPoint.x, endPoint.x)
-                                    let minY = min(startPoint.y, endPoint.y)
-                                    let maxX = max(startPoint.x, endPoint.x)
-                                    let maxY = max(startPoint.y, endPoint.y)
+                                    // Lifted — snap back and show menu
+                                    if isLifted {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                            liftDragOffset = .zero
+                                        }
+                                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                            showLiftMenu = true
+                                        }
+                                        return
+                                    }
 
-                                    boundingBox = SamBox(
-                                        x0: Float(minX), y0: Float(minY),
-                                        x1: Float(maxX), y1: Float(maxY)
-                                    )
+                                    // Box drag ended
+                                    if toolMode == .box, let start = dragStart {
+                                        let startPt = viewToImage(start, viewSize: geometry.size)
+                                        let endPt = viewToImage(value.location, viewSize: geometry.size)
+                                        boundingBox = SamBox(
+                                            x0: Float(min(startPt.x, endPt.x)),
+                                            y0: Float(min(startPt.y, endPt.y)),
+                                            x1: Float(max(startPt.x, endPt.x)),
+                                            y1: Float(max(startPt.y, endPt.y))
+                                        )
+                                        dragStart = nil
+                                        dragEnd = nil
+                                        runSegmentation()
+                                        return
+                                    }
 
-                                    dragStart = nil
-                                    dragEnd = nil
-                                    runSegmentation()
+                                    // Quick tap — add point or dismiss keyboard
+                                    if elapsed < 0.3 && moved < 15 {
+                                        if isTextFieldFocused {
+                                            isTextFieldFocused = false
+                                        } else {
+                                            handleTap(at: value.startLocation, geometry: geometry)
+                                        }
+                                    }
                                 }
-                            : nil
                         )
-                        .onTapGesture { location in
-                            guard !isLifted else { return }
-                            if isTextFieldFocused {
-                                isTextFieldFocused = false
-                            } else {
-                                handleTap(at: location, geometry: geometry)
-                            }
-                        }
-                        .onLongPressGesture(minimumDuration: 0.5) {
-                            guard !isLifted, hasVisibleMasks else { return }
-                            handleLiftObject()
-                        }
 
                     // Subject highlight — dim background + bright subject
                     if hasVisibleMasks && !isLifted {
@@ -240,38 +280,19 @@ struct UnifiedSegmentationView: View {
 
                     // MARK: In-place subject lift
                     if isLifted {
-                        // Dimmed background
+                        // Dimmed background — interactive only when menu is showing
                         Color.black.opacity(0.4)
                             .ignoresSafeArea()
+                            .allowsHitTesting(showLiftMenu)
                             .contentShape(Rectangle())
                             .onTapGesture { dismissLift() }
 
-                        // Lifted object — draggable
+                        // Lifted object — visual only, drag handled by base gesture
                         liftedSubjectView(geometry: geometry)
                             .shadow(color: .black.opacity(0.6), radius: 24, y: 12)
                             .scaleEffect(showLiftMenu ? 1.0 : 1.05)
                             .offset(liftDragOffset)
-                            .gesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        liftDragOffset = value.translation
-                                        if showLiftMenu {
-                                            withAnimation(.easeOut(duration: 0.15)) {
-                                                showLiftMenu = false
-                                            }
-                                        }
-                                    }
-                                    .onEnded { _ in
-                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                            liftDragOffset = .zero
-                                        }
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                                            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                                                showLiftMenu = true
-                                            }
-                                        }
-                                    }
-                            )
+                            .allowsHitTesting(false)
                             .animation(.spring(response: 0.35, dampingFraction: 0.75), value: showLiftMenu)
 
                         // Context menu
@@ -697,11 +718,6 @@ struct UnifiedSegmentationView: View {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
             isLifted = true
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                showLiftMenu = true
-            }
-        }
     }
 
     private func dismissLift() {
@@ -710,6 +726,7 @@ struct UnifiedSegmentationView: View {
             isLifted = false
         }
         liftDragOffset = .zero
+        liftStartTranslation = .zero
     }
 
     private func copyObject() {
