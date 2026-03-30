@@ -37,11 +37,22 @@ struct UnifiedSegmentationView: View {
     @State private var errorMessage: String?
     @FocusState private var isTextFieldFocused: Bool
 
+    // Outline animation
+    @State private var outlineImage: CGImage?
+
     // Lift object state
     @State private var liftedImage: UIImage?
-    @State private var showLiftedObject = false
+    @State private var isLifted = false
+    @State private var liftDragOffset: CGSize = .zero
+    @State private var showLiftMenu = false
     @State private var toastMessage: String?
     @State private var showShareSheet = false
+
+    private var hasVisibleMasks: Bool {
+        if let result = samResult, !result.masks.isEmpty { return true }
+        if let result = textResult, !result.masks.isEmpty { return true }
+        return false
+    }
 
     var body: some View {
         NavigationView {
@@ -57,12 +68,14 @@ struct UnifiedSegmentationView: View {
                             toolMode == .box ?
                             DragGesture()
                                 .onChanged { value in
+                                    guard !isLifted else { return }
                                     if dragStart == nil {
                                         dragStart = value.startLocation
                                     }
                                     dragEnd = value.location
                                 }
                                 .onEnded { value in
+                                    guard !isLifted else { return }
                                     guard let start = dragStart else { return }
                                     let startPoint = viewToImage(start, viewSize: geometry.size)
                                     let endPoint = viewToImage(value.location, viewSize: geometry.size)
@@ -83,44 +96,53 @@ struct UnifiedSegmentationView: View {
                                 }
                             : nil
                         )
+                        .simultaneousGesture(
+                            LongPressGesture(minimumDuration: 0.5)
+                                .simultaneously(with: DragGesture(minimumDistance: 0))
+                                .onChanged { value in
+                                    if isLifted {
+                                        // Already lifted — track drag
+                                        if let drag = value.second {
+                                            liftDragOffset = drag.translation
+                                        }
+                                    } else if hasVisibleMasks && value.first == true {
+                                        // Long press recognized — start lift
+                                        handleLiftObject()
+                                    }
+                                }
+                                .onEnded { _ in
+                                    guard isLifted else { return }
+                                    // Finger up — snap back and show menu
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                        liftDragOffset = .zero
+                                    }
+                                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                        showLiftMenu = true
+                                    }
+                                }
+                        )
                         .onTapGesture { location in
+                            guard !isLifted else { return }
                             if isTextFieldFocused {
                                 isTextFieldFocused = false
                             } else {
                                 handleTap(at: location, geometry: geometry)
                             }
                         }
-                        .onLongPressGesture(minimumDuration: 0.5) {
-                            handleLiftObject()
-                        }
 
-                    // SAM mask overlay (always show top mask)
-                    if let result = samResult, !result.masks.isEmpty {
-                        Image(uiImage: UIImage(cgImage: result.masks[0].cgImage))
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-                            .opacity(0.6)
+                    // Subject highlight — dim background + bright subject
+                    if hasVisibleMasks && !isLifted {
+                        Color.black.opacity(0.25)
+                            .allowsHitTesting(false)
+
+                        liftedSubjectView(geometry: geometry)
                             .allowsHitTesting(false)
                     }
 
-                    // Text mask overlays
-                    if let result = textResult {
-                        ForEach(Array(result.masks.enumerated()), id: \.offset) { index, mask in
-                            let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
-                            if isSelected {
-                                Image(uiImage: UIImage(cgImage: mask.cgImage))
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: geometry.size.width, height: geometry.size.height)
-                                    .opacity(0.5)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-
-                        // Text detection bounding boxes (hidden — masks only)
+                    // Animated glowing outline
+                    if !isLifted, let outline = outlineImage {
+                        glowingOutlineView(outline: outline, geometry: geometry)
                     }
-
 
                     // Drag-in-progress box
                     if let start = dragStart, let end = dragEnd {
@@ -159,8 +181,9 @@ struct UnifiedSegmentationView: View {
                             )
                     }
 
-                    // Point markers
-                    ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                    // Point markers — hide when lifted
+                    if !isLifted {
+                        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
                             Circle()
                                 .fill(point.label == .positive ? Color.green : Color.red)
                                 .frame(width: 12, height: 12)
@@ -171,6 +194,7 @@ struct UnifiedSegmentationView: View {
                                         viewSize: geometry.size
                                     )
                                 )
+                        }
                     }
 
                     // Processing indicator
@@ -197,14 +221,16 @@ struct UnifiedSegmentationView: View {
                         }
                     }
 
-                    // Floating toolbar (top-left)
-                    VStack {
-                        floatingToolbar
-                        Spacer()
+                    // Floating toolbar — hide when lifted
+                    if !isLifted {
+                        VStack {
+                            floatingToolbar
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 8)
+                        .padding(.leading, 8)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 8)
-                    .padding(.leading, 8)
 
                     // Error message (top, below toolbar)
                     if let error = errorMessage {
@@ -222,19 +248,48 @@ struct UnifiedSegmentationView: View {
                         .allowsHitTesting(false)
                     }
 
-                    // Text field overlay (bottom)
-                    VStack {
-                        Spacer()
-                        textFieldOverlay
+                    // Text field overlay — hide when lifted
+                    if !isLifted {
+                        VStack {
+                            Spacer()
+                            textFieldOverlay
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
+
+                    // MARK: In-place subject lift
+                    if isLifted {
+                        // Dimmed background — only intercepts taps when menu is showing
+                        Color.black.opacity(0.4)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(showLiftMenu)
+                            .contentShape(Rectangle())
+                            .onTapGesture { dismissLift() }
+
+                        // Lifted object — purely visual, gesture handled by base image
+                        liftedSubjectView(geometry: geometry)
+                            .shadow(color: .black.opacity(0.6), radius: 24, y: 12)
+                            .scaleEffect(showLiftMenu ? 1.0 : 1.05)
+                            .offset(liftDragOffset)
+                            .allowsHitTesting(false)
+                            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: showLiftMenu)
+
+                        // Context menu — appears on finger up
+                        if showLiftMenu {
+                            liftContextMenu
+                                .transition(.scale(scale: 0.8).combined(with: .opacity))
+                        }
+                    }
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Back") { dismiss() }
+                    Button("Back") {
+                        if isLifted { dismissLift() }
+                        else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .principal) {
                     Text(modelManager.activeModelName)
@@ -243,12 +298,6 @@ struct UnifiedSegmentationView: View {
             }
         }
         .task { await setImageOnSessions() }
-        .overlay {
-            if showLiftedObject, let lifted = liftedImage {
-                liftedObjectOverlay(lifted)
-                    .transition(.opacity)
-            }
-        }
         .overlay {
             if let message = toastMessage {
                 VStack {
@@ -275,8 +324,9 @@ struct UnifiedSegmentationView: View {
                 ActivityViewController(items: [lifted])
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: showLiftedObject)
+        .animation(.easeInOut(duration: 0.25), value: isLifted)
         .animation(.easeInOut(duration: 0.2), value: toastMessage != nil)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: showLiftMenu)
     }
 
     // MARK: - Floating Toolbar
@@ -444,6 +494,7 @@ struct UnifiedSegmentationView: View {
             self.samResult = result
             self.isProcessing = false
         }
+        updateOutline()
     }
 
     private func runSam2Segmentation() async throws {
@@ -460,6 +511,7 @@ struct UnifiedSegmentationView: View {
             self.samResult = result
             self.isProcessing = false
         }
+        updateOutline()
     }
 
     private func runTextDetection() {
@@ -491,6 +543,7 @@ struct UnifiedSegmentationView: View {
                         self.errorMessage = "No '\(query)' found in image"
                     }
                 }
+                updateOutline()
             } catch {
                 await MainActor.run {
                     self.isProcessing = false
@@ -540,6 +593,7 @@ struct UnifiedSegmentationView: View {
         textResult = nil
         selectedTextIndices.removeAll()
         errorMessage = nil
+        outlineImage = nil
     }
 
     private func toggleTextSelection(_ index: Int) {
@@ -550,62 +604,82 @@ struct UnifiedSegmentationView: View {
         }
     }
 
-    // MARK: - Object Lift
+    // MARK: - Subject Lift
 
     @ViewBuilder
-    private func liftedObjectOverlay(_ lifted: UIImage) -> some View {
+    private func liftedSubjectView(geometry: GeometryProxy) -> some View {
+        Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .mask(
+                maskOverlayView(geometry: geometry)
+            )
+    }
+
+    @ViewBuilder
+    private func maskOverlayView(geometry: GeometryProxy) -> some View {
         ZStack {
-            Color.black.opacity(0.7)
-                .ignoresSafeArea()
-                .onTapGesture { dismissLift() }
-
-            VStack(spacing: 0) {
-                Spacer()
-
-                Image(uiImage: lifted)
+            if let result = samResult, !result.masks.isEmpty {
+                Image(uiImage: UIImage(cgImage: result.masks[0].cgImage))
                     .resizable()
                     .scaledToFit()
-                    .padding(32)
-                    .background(
-                        CheckerboardBackground()
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .padding(24)
-                    )
-                    .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
-                    .scaleEffect(showLiftedObject ? 1.0 : 0.9)
-
-                Spacer()
-
-                HStack(spacing: 40) {
-                    Button { copyObject() } label: {
-                        VStack(spacing: 6) {
-                            Image(systemName: "doc.on.doc")
-                                .font(.title2)
-                            Text("Copy")
-                                .font(.caption)
-                        }
-                    }
-                    Button { saveObject() } label: {
-                        VStack(spacing: 6) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.title2)
-                            Text("Save")
-                                .font(.caption)
-                        }
-                    }
-                    Button { shareObject() } label: {
-                        VStack(spacing: 6) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.title2)
-                            Text("Share")
-                                .font(.caption)
-                        }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            if let result = textResult {
+                ForEach(Array(result.masks.enumerated()), id: \.offset) { index, mask in
+                    let isSelected = selectedTextIndices.isEmpty || selectedTextIndices.contains(index)
+                    if isSelected {
+                        Image(uiImage: UIImage(cgImage: mask.cgImage))
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                 }
-                .foregroundColor(.white)
-                .padding(.bottom, 50)
             }
         }
+    }
+
+    @ViewBuilder
+    private var liftContextMenu: some View {
+        VStack(spacing: 0) {
+            Button {
+                copyObject()
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+            }
+            Divider()
+            Button {
+                saveObject()
+            } label: {
+                Label("Save to Photos", systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+            }
+            Divider()
+            Button {
+                shareObject()
+                dismissLift()
+            } label: {
+                Label("Share...", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+            }
+        }
+        .foregroundColor(.primary)
+        .font(.body)
+        .frame(width: 220)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.2), radius: 20, y: 5)
     }
 
     private func handleLiftObject() {
@@ -626,35 +700,43 @@ struct UnifiedSegmentationView: View {
         guard !visibleMasks.isEmpty,
               let extracted = SamMask.extractObject(from: cgImage, masks: visibleMasks) else { return }
 
+        // Cropped image for copy/save/share actions
         liftedImage = UIImage(cgImage: extracted)
+
+        // Haptic feedback
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+
         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-            showLiftedObject = true
+            isLifted = true
         }
     }
 
     private func dismissLift() {
         withAnimation(.easeOut(duration: 0.2)) {
-            showLiftedObject = false
+            showLiftMenu = false
+            isLifted = false
         }
+        liftDragOffset = .zero
     }
 
     private func copyObject() {
         guard let lifted = liftedImage,
               let pngData = lifted.pngData() else { return }
         UIPasteboard.general.setData(pngData, forPasteboardType: UTType.png.identifier)
-        withAnimation { toastMessage = "Copied to clipboard" }
         dismissLift()
+        withAnimation { toastMessage = "Copied to clipboard" }
     }
 
     private func saveObject() {
         guard let lifted = liftedImage,
               let pngData = lifted.pngData() else { return }
+        dismissLift()
 
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
             guard status == .authorized || status == .limited else {
                 DispatchQueue.main.async {
                     withAnimation { toastMessage = "Photo access denied" }
-                    dismissLift()
                 }
                 return
             }
@@ -664,7 +746,6 @@ struct UnifiedSegmentationView: View {
             } completionHandler: { success, _ in
                 DispatchQueue.main.async {
                     withAnimation { toastMessage = success ? "Saved to Photos" : "Save failed" }
-                    dismissLift()
                 }
             }
         }
@@ -672,6 +753,145 @@ struct UnifiedSegmentationView: View {
 
     private func shareObject() {
         showShareSheet = true
+    }
+
+    // MARK: - Glowing Outline
+
+    @ViewBuilder
+    private func glowingOutlineView(outline: CGImage, geometry: GeometryProxy) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let phase = t.truncatingRemainder(dividingBy: 2.5) / 2.5
+
+            ZStack {
+                // Soft glow layer
+                Image(uiImage: UIImage(cgImage: outline))
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .colorMultiply(Color(red: 0.5, green: 0.85, blue: 1.0))
+                    .blur(radius: 5)
+                    .opacity(0.8)
+
+                // Sharp outline
+                Image(uiImage: UIImage(cgImage: outline))
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .colorMultiply(.white)
+
+                // Traveling shimmer highlight
+                Image(uiImage: UIImage(cgImage: outline))
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .colorMultiply(.white)
+                    .mask(
+                        AngularGradient(
+                            gradient: Gradient(colors: [
+                                .white, .white.opacity(0.5), .clear, .clear,
+                                .clear, .clear, .clear, .white.opacity(0.3)
+                            ]),
+                            center: .center,
+                            startAngle: .degrees(phase * 360),
+                            endAngle: .degrees(phase * 360 + 360)
+                        )
+                    )
+                    .blur(radius: 2)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func generateOutline(from maskImage: CGImage) -> CGImage? {
+        let width = maskImage.width
+        let height = maskImage.height
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        let glowRadius = CGFloat(min(30, max(4, min(width, height) / 100)))
+
+        // Step 1: Create white silhouette from mask alpha
+        guard let silCtx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        silCtx.draw(maskImage, in: rect)
+        silCtx.setBlendMode(.sourceIn)
+        silCtx.setFillColor(UIColor.white.cgColor)
+        silCtx.fill(rect)
+        guard let whiteSilhouette = silCtx.makeImage() else { return nil }
+
+        // Step 2: Draw silhouette with shadow glow, then erase interior
+        guard let outCtx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        outCtx.setShadow(offset: .zero, blur: glowRadius, color: UIColor.white.cgColor)
+        outCtx.draw(whiteSilhouette, in: rect)
+
+        outCtx.setShadow(offset: .zero, blur: 0, color: nil)
+        outCtx.setBlendMode(.destinationOut)
+        outCtx.draw(whiteSilhouette, in: rect)
+
+        return outCtx.makeImage()
+    }
+
+    private func composeMasks(_ masks: [CGImage]) -> CGImage? {
+        guard let first = masks.first else { return nil }
+        if masks.count == 1 { return first }
+
+        let width = first.width
+        let height = first.height
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        for mask in masks {
+            ctx.draw(mask, in: rect)
+        }
+        return ctx.makeImage()
+    }
+
+    private func updateOutline() {
+        let currentSamResult = samResult
+        let currentTextResult = textResult
+        let currentIndices = selectedTextIndices
+
+        Task {
+            var maskImages: [CGImage] = []
+            if let result = currentSamResult, !result.masks.isEmpty {
+                maskImages.append(result.masks[0].cgImage)
+            }
+            if let result = currentTextResult, !result.masks.isEmpty {
+                let indices = currentIndices.isEmpty
+                    ? Set(0..<result.masks.count)
+                    : currentIndices
+                maskImages += indices.sorted().compactMap {
+                    $0 < result.masks.count ? result.masks[$0].cgImage : nil
+                }
+            }
+
+            guard !maskImages.isEmpty else {
+                await MainActor.run { outlineImage = nil }
+                return
+            }
+
+            let composed = composeMasks(maskImages)
+            let outline = composed.flatMap { generateOutline(from: $0) }
+
+            await MainActor.run {
+                self.outlineImage = outline
+            }
+        }
     }
 
     // MARK: - Coordinate Conversion
@@ -728,31 +948,6 @@ struct UnifiedSegmentationView: View {
             x: imagePoint.x / imageSize.width * displayedSize.width + offset.x,
             y: imagePoint.y / imageSize.height * displayedSize.height + offset.y
         )
-    }
-}
-
-// MARK: - Checkerboard Background (indicates transparency)
-
-private struct CheckerboardBackground: View {
-    let tileSize: CGFloat = 10
-
-    var body: some View {
-        Canvas { context, size in
-            let cols = Int(ceil(size.width / tileSize))
-            let rows = Int(ceil(size.height / tileSize))
-            for row in 0..<rows {
-                for col in 0..<cols {
-                    let isLight = (row + col) % 2 == 0
-                    let rect = CGRect(
-                        x: CGFloat(col) * tileSize,
-                        y: CGFloat(row) * tileSize,
-                        width: tileSize,
-                        height: tileSize
-                    )
-                    context.fill(Path(rect), with: .color(isLight ? .white : Color(white: 0.85)))
-                }
-            }
-        }
     }
 }
 
