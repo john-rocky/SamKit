@@ -99,7 +99,7 @@ struct UnifiedSegmentationView: View {
                         )
                         .simultaneousGesture(
                             LongPressGesture(minimumDuration: 0.5)
-                                .simultaneously(with: DragGesture(minimumDistance: 0))
+                                .simultaneously(with: DragGesture())
                                 .onChanged { value in
                                     if isLifted {
                                         // Already lifted — track drag
