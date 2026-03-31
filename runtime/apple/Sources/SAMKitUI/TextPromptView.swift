@@ -16,6 +16,7 @@ public struct TextPromptView: View {
     @State private var errorMessage: String?
     @State private var selectedIndices: Set<Int> = []
     @State private var showMasks = true
+    @State private var confidenceThreshold: Float = 0.001
 
     // Subject highlight
     @State private var binaryMask: CGImage?
@@ -196,6 +197,18 @@ public struct TextPromptView: View {
                     }
                 }
 
+                HStack(spacing: 4) {
+                    Text("Threshold")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Slider(value: $confidenceThreshold, in: 0.001...0.5)
+                        .frame(maxWidth: .infinity)
+                    Text(String(format: "%.3f", confidenceThreshold))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.secondary)
+                        .frame(width: 40)
+                }
+
                 HStack(spacing: 8) {
                     TextField("Type object name (e.g. dog, car)", text: $queryText)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
@@ -326,7 +339,8 @@ public struct TextPromptView: View {
                     await MainActor.run { imageSet = true }
                 }
 
-                let newResult = try session.segment(query: query)
+                let opts = TextPromptOptions(confidenceThreshold: confidenceThreshold)
+                let newResult = try session.segment(query: query, options: opts)
 
                 await MainActor.run {
                     self.result = newResult

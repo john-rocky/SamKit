@@ -10,7 +10,6 @@ public struct GroundingModelRef {
     public let textEncoderURL: URL
     public let detectorURL: URL
     public let vocabularyURL: URL
-    public let cv4ParamsURL: URL
     public let inputSize: Int
     public let maxClasses: Int
     public let contextLength: Int
@@ -19,7 +18,6 @@ public struct GroundingModelRef {
         textEncoderURL: URL,
         detectorURL: URL,
         vocabularyURL: URL,
-        cv4ParamsURL: URL,
         inputSize: Int = 640,
         maxClasses: Int = 80,
         contextLength: Int = 77
@@ -27,7 +25,6 @@ public struct GroundingModelRef {
         self.textEncoderURL = textEncoderURL
         self.detectorURL = detectorURL
         self.vocabularyURL = vocabularyURL
-        self.cv4ParamsURL = cv4ParamsURL
         self.inputSize = inputSize
         self.maxClasses = maxClasses
         self.contextLength = contextLength
@@ -37,8 +34,7 @@ public struct GroundingModelRef {
     public static func bundled(
         textEncoderName: String = "clip_text_encoder",
         detectorName: String = "yoloworld_detector",
-        vocabName: String = "clip_vocab",
-        cv4ParamsName: String = "cv4_params"
+        vocabName: String = "clip_vocab"
     ) throws -> GroundingModelRef {
         let bundle = Bundle.main
 
@@ -56,15 +52,10 @@ public struct GroundingModelRef {
             throw GroundingError.modelNotFound("Vocabulary '\(vocabName).json' not found")
         }
 
-        guard let cv4URL = bundle.url(forResource: cv4ParamsName, withExtension: "json") else {
-            throw GroundingError.modelNotFound("cv4 params '\(cv4ParamsName).json' not found")
-        }
-
         return GroundingModelRef(
             textEncoderURL: textEncoderURL,
             detectorURL: detectorURL,
-            vocabularyURL: vocabURL,
-            cv4ParamsURL: cv4URL
+            vocabularyURL: vocabURL
         )
     }
 }
