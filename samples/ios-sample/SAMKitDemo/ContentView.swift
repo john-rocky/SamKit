@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showImagePicker = false
     @State private var showCamera = false
     @State private var showSegmentationView = false
+    @State private var showFastSamView = false
 
     var body: some View {
         NavigationView {
@@ -124,6 +125,17 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
+
+                        // FastSAM: one-pass "segment everything", then tap to pick an object.
+                        Button(action: {
+                            showFastSamView = true
+                        }) {
+                            Label("Segment Everything (FastSAM)", systemImage: "square.grid.3x3.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .disabled(modelManager.fastSamSession == nil)
                     }
                 }
                 .padding(.horizontal)
@@ -139,6 +151,12 @@ struct ContentView: View {
             .fullScreenCover(isPresented: $showSegmentationView) {
                 if let image = selectedImage {
                     UnifiedSegmentationView(image: image)
+                        .environmentObject(modelManager)
+                }
+            }
+            .fullScreenCover(isPresented: $showFastSamView) {
+                if let image = selectedImage {
+                    FastSamView(image: image)
                         .environmentObject(modelManager)
                 }
             }

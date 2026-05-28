@@ -12,6 +12,7 @@ final class ModelManager: ObservableObject {
     @Published var samSession: SamSession?
     @Published var textSession: TextSegmentationSession?
     @Published var sam2Session: Sam2Session?
+    @Published var fastSamSession: FastSamSession?
 
     @Published var isLoading = true
     @Published var loadingStatus = "Initializing..."
@@ -46,6 +47,15 @@ final class ModelManager: ObservableObject {
                 self.textSession = session
             } catch {
                 print("[ModelManager] Text session load failed: \(error)")
+            }
+
+            // 3. Load FastSAM (optional — YOLOv8-seg "segment everything")
+            loadingStatus = "Loading FastSAM..."
+            do {
+                let session = try await Self.createFastSamSession()
+                self.fastSamSession = session
+            } catch {
+                print("[ModelManager] FastSAM load failed: \(error)")
             }
 
             isLoading = false
@@ -128,5 +138,12 @@ final class ModelManager: ObservableObject {
     private nonisolated static func createSam2Session(modelPrefix: String) async throws -> Sam2Session {
         let config = RuntimeConfig(computeUnits: .neuralEnginePreferred, enableFP16: true)
         return try Sam2Session(modelName: modelPrefix, config: config)
+    }
+
+    private nonisolated static func createFastSamSession() async throws -> FastSamSession {
+        // FastSAM-s by default; swap to "FastSAM_x" for higher quality.
+        let model = try FastSamSession.ModelRef.bundled("FastSAM_s")
+        let config = RuntimeConfig(computeUnits: .neuralEnginePreferred, enableFP16: true)
+        return try FastSamSession(model: model, config: config)
     }
 }

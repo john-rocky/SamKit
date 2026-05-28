@@ -24,7 +24,7 @@ SAMKit brings Meta's [Segment Anything Model](https://github.com/facebookresearc
 - **Point & Box** &mdash; Tap a point or drag a bounding box to segment any object
 - **Text Prompt** &mdash; Type `"dog"` or `"red cup"` to find and segment objects, powered by YOLO-World + CLIP
 - **Subject Lift** &mdash; Long-press to lift the segmented object from the scene, then copy, save, or share as a transparent PNG
-- **Two Backbones** &mdash; MobileSAM (fast, 23 MB) and SAM2 Tiny (accurate, 76 MB)
+- **Three Backbones** &mdash; MobileSAM (fast, 23 MB), SAM2 Tiny (accurate, 76 MB), and FastSAM (YOLOv8-seg "segment everything", real-time)
 - **Drop-in UI** &mdash; Pre-built SwiftUI views for shipping a segmentation feature in minutes
 - **Fully On-Device** &mdash; Neural Engine / GPU acceleration, FP16, zero network calls
 
@@ -75,6 +75,18 @@ Grab the `.mlpackage` files from **[Releases](https://github.com/john-rocky/SamK
 </details>
 
 <details>
+<summary><strong>FastSAM</strong> &mdash; 23 MB (s) / 138 MB (x) (optional)</summary>
+
+| File | Size |
+|------|------|
+| `FastSAM_s_<320\|512\|640>.mlpackage` | ~23 MB each |
+| `FastSAM_x_<size>.mlpackage` | ~138 MB each |
+
+YOLOv8-seg "segment everything" (ImageType input, exported per resolution). Use `FastSAM_s` for
+real-time / on-device, `FastSAM_x` for quality.
+</details>
+
+<details>
 <summary><strong>Grounding (YOLO-World + CLIP)</strong> &mdash; 148 MB (optional)</summary>
 
 | File | Size |
@@ -121,6 +133,33 @@ let result = try session.predict(
     points: [SamPoint(x: 100, y: 200, label: .positive)]
 )
 ```
+
+### FastSAM — Segment Everything
+
+FastSAM is a YOLOv8-seg model: one forward pass segments every object, and a tap just selects
+one. The detector runs once in `setImage`, so taps and per-frame (real-time) use are cheap —
+~30 fps on-device. Masks are assembled with a batched `sgemm` at proto resolution; FP16 model
+outputs (Float16) are bulk-converted, and an optional IoU tracker keeps colours stable on video.
+
+```swift
+import SAMKit
+
+// ImageType models, exported per input size: "FastSAM_s_320" / "_512" / "_640" (or "_x_…").
+let session = try FastSamSession(modelName: "FastSAM_s_512")
+session.trackColors = true                 // stable per-object colours across frames (video/live)
+
+// Real-time: feed the camera's pixel buffer directly (no CGImage round-trip)
+try session.setImage(cvPixelBuffer)
+let overlay = try session.segmentEverythingMask()          // CGImage? — composited overlay
+
+// Photos: feed a CGImage
+try session.setImage(cgImage)
+let instances = try session.segmentEverything()            // [FastSamSession.Instance]
+let picked    = try session.segment(at: CGPoint(x: 100, y: 200))   // tap to isolate one
+```
+
+Drives real-time camera, photo tap-to-pick, and offline video segmentation — see
+[`john-rocky/CoreML-Models` → FastSAMDemo](https://github.com/john-rocky/CoreML-Models/tree/master/sample_apps/FastSAMDemo).
 
 ### Text-Prompted Segmentation
 
@@ -187,6 +226,9 @@ python convert_sam2_to_coreml.py
 
 # YOLO-World (S/M/L/X)
 python convert_yoloworld_to_coreml.py --size s
+
+# FastSAM (s and x)
+python convert_fastsam_to_coreml.py
 ```
 
 ## License
