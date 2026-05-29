@@ -1,6 +1,11 @@
-// swift-tools-version: 5.7
+// swift-tools-version: 5.9
+// The swift-tools-version declares the minimum version of Swift required to build this package.
+
 import PackageDescription
 
+// Swift Package Manager manifest for the Apple (Core ML) runtime. The shared C++ core
+// under `core/` is built separately via CMake (CMakeLists.txt) and is not required by the
+// Swift targets, so it is intentionally not part of this SwiftPM graph.
 let package = Package(
     name: "SAMKit",
     platforms: [
@@ -13,65 +18,30 @@ let package = Package(
             targets: ["SAMKit"]
         ),
         .library(
+            name: "SAMKitGrounding",
+            targets: ["SAMKitGrounding"]
+        ),
+        .library(
             name: "SAMKitUI",
             targets: ["SAMKitUI"]
-        )
+        ),
     ],
     dependencies: [],
     targets: [
-        // Main SAMKit target
         .target(
             name: "SAMKit",
-            dependencies: ["SAMKitCore"],
-            path: "runtime/apple/Sources/SAMKit",
-            resources: [
-                .process("Resources")
-            ],
-            swiftSettings: [
-                .define("ACCELERATE_NEW_LAPACK"),
-                .define("ACCELERATE_LAPACK_ILP64")
-            ]
-        ),
-        
-        // Core C++ implementation
-        .target(
-            name: "SAMKitCore",
             dependencies: [],
-            path: "core",
-            sources: ["src"],
-            publicHeadersPath: "include",
-            cxxSettings: [
-                .headerSearchPath("include"),
-                .define("SAMKIT_BUILD", to: "1"),
-                .standard(.cxx17)
-            ],
-            linkerSettings: [
-                .linkedFramework("Accelerate"),
-                .linkedFramework("CoreML"),
-                .linkedFramework("Metal"),
-                .linkedFramework("MetalPerformanceShaders")
-            ]
+            path: "runtime/apple/Sources/SAMKit"
         ),
-        
-        // UI Components
+        .target(
+            name: "SAMKitGrounding",
+            dependencies: ["SAMKit"],
+            path: "runtime/apple/Sources/SAMKitGrounding"
+        ),
         .target(
             name: "SAMKitUI",
-            dependencies: ["SAMKit"],
-            path: "ui/ios/Sources",
-            resources: [
-                .process("Resources")
-            ]
+            dependencies: ["SAMKit", "SAMKitGrounding"],
+            path: "runtime/apple/Sources/SAMKitUI"
         ),
-        
-        // Tests
-        .testTarget(
-            name: "SAMKitTests",
-            dependencies: ["SAMKit"],
-            path: "runtime/apple/Tests",
-            resources: [
-                .process("Resources")
-            ]
-        )
-    ],
-    cxxLanguageStandard: .cxx17
+    ]
 )

@@ -262,9 +262,9 @@ public struct RuntimeConfig {
             switch self {
             case .cpuOnly: return .cpuOnly
             case .gpuPreferred: return .cpuAndGPU
-            case .neuralEnginePreferred: 
+            case .neuralEnginePreferred:
                 // Prefer Neural Engine for best performance
-                if #available(iOS 16.0, *) {
+                if #available(iOS 16.0, macOS 13.0, *) {
                     return .cpuAndNeuralEngine
                 } else {
                     return .cpuAndGPU
